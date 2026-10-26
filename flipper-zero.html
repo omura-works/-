@@ -1,0 +1,2982 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+</head>
+<body>
+<title>Flipper Zero 3D</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: 3Dステージ（左・可変）＋ 解説パネル（右・固定幅）。スマホでは縦積み。外部リソースなし＝オフライン動作 */
+:root {
+  --bg: #E7EAEE;
+  --surface: #FBFCFD;
+  --ink: #14171C;
+  --muted: #59616C;
+  --line: #D2D7DE;
+  --accent: #FF8200;
+  --accent-ink: #A14B00;
+  --accent-soft: rgba(255, 130, 0, .14);
+  --stage: #D9DEE4;
+  --grid: rgba(25, 35, 50, .09);
+  --font-ui: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  /* 本体の色（テーマに依存しない実物の色） */
+  --body: #F4F4F1;
+  --edge: #D9DAD5;
+  --seam: #C4C5C0;
+  --bezel: #26282B;
+  --key: #ECEDE9;
+  --key-ink: #3A3D42;
+  --u: 4px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0E1013; --surface: #171A1F; --ink: #E8EBEF; --muted: #98A1AC; --line: #2A3038;
+    --accent: #FF8A1F; --accent-ink: #FFA552; --accent-soft: rgba(255, 138, 31, .16);
+    --stage: #13161A; --grid: rgba(200, 215, 235, .07); color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0E1013; --surface: #171A1F; --ink: #E8EBEF; --muted: #98A1AC; --line: #2A3038;
+  --accent: #FF8A1F; --accent-ink: #FFA552; --accent-soft: rgba(255, 138, 31, .16);
+  --stage: #13161A; --grid: rgba(200, 215, 235, .07); color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg); color: var(--ink);
+  font: 14px/1.7 var(--font-ui);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 20px 28px;
+}
+.wrap { max-width: 1240px; margin: 0 auto; display: grid; gap: 16px; }
+
+/* ヘッダー */
+.top { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 8px 24px; }
+.eyebrow { margin: 0; font: 600 11px/1.4 var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--accent-ink); }
+h1 { margin: 2px 0 0; font-size: clamp(24px, 4vw, 34px); line-height: 1.15; letter-spacing: -.01em; font-weight: 800; text-wrap: balance; }
+.lede { margin: 4px 0 0; color: var(--muted); max-width: 62ch; }
+.offline { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; font: 600 12px/1.5 var(--font-mono); color: var(--muted); background: var(--surface); }
+.offline::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #2FA84F; }
+
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; }
+@media (max-width: 880px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+
+/* 3Dステージ */
+.viewer { display: grid; gap: 10px; min-width: 0; }
+.stage {
+  position: relative; overflow: hidden; border-radius: 14px;
+  height: clamp(360px, 62vh, 640px);
+  background:
+    radial-gradient(circle at 50% 45%, transparent 0 40%, rgba(0,0,0,.06) 100%),
+    radial-gradient(var(--grid) 1px, transparent 1.4px) 0 0 / 22px 22px,
+    var(--stage);
+  perspective: calc(var(--u) * 460);
+  touch-action: none; cursor: grab; user-select: none; -webkit-user-select: none;
+  outline: none;
+}
+.stage:focus-visible { box-shadow: inset 0 0 0 3px var(--accent); }
+.stage.dragging { cursor: grabbing; }
+.floor {
+  position: absolute; left: 50%; top: 50%;
+  width: calc(var(--u) * 112); height: calc(var(--u) * 16);
+  transform: translate(-50%, calc(var(--u) * 30)) scale(var(--z, 1));
+  background: radial-gradient(closest-side, rgba(0,0,0,.26), transparent);
+  filter: blur(6px); pointer-events: none;
+}
+.model { position: absolute; left: 50%; top: 50%; width: 0; height: 0; transform-style: preserve-3d; }
+.face, .layer { position: absolute; left: 0; top: 0; }
+.face { backface-visibility: hidden; -webkit-backface-visibility: hidden; background: var(--body); overflow: hidden; }
+.face::after { content: ""; position: absolute; inset: 0; background: rgba(0,0,0,var(--shade, 0)); pointer-events: none; z-index: 5; }
+.face-front, .face-back { border-radius: calc(var(--u) * 8); }
+.face-front {
+  background: linear-gradient(160deg, #FFFFFF 0%, var(--body) 55%, #ECECE8 100%);
+  box-shadow: inset 0 0 0 calc(var(--u) * .7) rgba(0,0,0,.05), inset 0 calc(var(--u) * .5) 0 rgba(255,255,255,.9);
+}
+.face-back { background: linear-gradient(200deg, #F7F7F4, #E9E9E5); box-shadow: inset 0 0 0 calc(var(--u) * .7) rgba(0,0,0,.06); }
+.face-top, .face-bottom { background: linear-gradient(to bottom, var(--edge) calc(50% - .5px), var(--seam) calc(50% - .5px) calc(50% + .5px), var(--edge) calc(50% + .5px)); }
+.face-left, .face-right { background: linear-gradient(to right, var(--edge) calc(50% - .5px), var(--seam) calc(50% - .5px) calc(50% + .5px), var(--edge) calc(50% + .5px)); }
+.layer { border-radius: calc(var(--u) * 8); background: #CFD0CB; }
+.layer.seam { background: #B9BAB5; }
+
+/* パーツ共通 */
+.feat { position: absolute; cursor: pointer; z-index: 2; }
+.feat.sel { outline: calc(var(--u) * .6) solid var(--accent); outline-offset: calc(var(--u) * .7); border-radius: calc(var(--u) * .5); }
+.mark {
+  position: absolute; z-index: 6; width: calc(var(--u) * 4.6); height: calc(var(--u) * 4.6);
+  margin: calc(var(--u) * -2.3) 0 0 calc(var(--u) * -2.3);
+  display: grid; place-items: center; border-radius: 50%;
+  background: var(--accent); color: #1C0E00; cursor: pointer;
+  font: 800 calc(var(--u) * 2.6)/1 var(--font-mono);
+  box-shadow: 0 0 0 calc(var(--u) * .5) #fff, 0 calc(var(--u) * .4) calc(var(--u) * 1.2) rgba(0,0,0,.3);
+  animation: pulse 2.4s ease-in-out infinite;
+}
+.mark.sel { background: #1C0E00; color: var(--accent); }
+.no-marks .mark { display: none; }
+@keyframes pulse { 50% { box-shadow: 0 0 0 calc(var(--u) * .5) #fff, 0 0 0 calc(var(--u) * 1.8) rgba(255,130,0,.35); } }
+
+/* 画面 */
+.bezel { border-radius: calc(var(--u) * 3.2); background: linear-gradient(170deg, #34373B, var(--bezel)); box-shadow: inset 0 calc(var(--u) * .4) calc(var(--u) * .8) rgba(0,0,0,.6); }
+.lcd {
+  position: absolute; left: calc(var(--u) * 5); top: calc(var(--u) * 5);
+  width: calc(var(--u) * 36); height: calc(var(--u) * 18);
+  image-rendering: pixelated; image-rendering: crisp-edges;
+  border-radius: calc(var(--u) * .4);
+  box-shadow: 0 0 calc(var(--u) * 2) rgba(255,140,30,.3);
+}
+.glass { position: absolute; inset: 0; border-radius: inherit; background: linear-gradient(115deg, rgba(255,255,255,.14) 0 30%, transparent 30.5%); pointer-events: none; z-index: 2; }
+
+/* LED */
+.led { border-radius: 50%; background: radial-gradient(circle at 35% 35%, #fff, #C9CBC6 60%, #A9AAA5); box-shadow: inset 0 0 0 calc(var(--u) * .3) rgba(0,0,0,.15); transition: background .05s, box-shadow .05s; }
+.led.on { background: var(--led, #39A0FF); box-shadow: 0 0 calc(var(--u) * 3.2) var(--led, #39A0FF), 0 0 calc(var(--u) * 1.2) var(--led, #39A0FF); }
+
+/* 方向パッド */
+.dpad { border-radius: 50%; overflow: hidden; background: #BFC0BB; box-shadow: 0 calc(var(--u) * .6) calc(var(--u) * 1.2) rgba(0,0,0,.2), inset 0 0 0 calc(var(--u) * .5) rgba(0,0,0,.08); }
+.wedge { position: absolute; inset: 0; background: radial-gradient(circle at 40% 30%, #FFFFFF, var(--key) 60%, #DCDDD8); cursor: pointer; }
+.wedge[data-key="up"]    { clip-path: polygon(50% 46%, 4% 0, 96% 0); }
+.wedge[data-key="right"] { clip-path: polygon(54% 50%, 100% 4%, 100% 96%); }
+.wedge[data-key="down"]  { clip-path: polygon(50% 54%, 96% 100%, 4% 100%); }
+.wedge[data-key="left"]  { clip-path: polygon(46% 50%, 0 96%, 0 4%); }
+.wedge i { position: absolute; width: 0; height: 0; border: calc(var(--u) * 1.3) solid transparent; }
+.wedge[data-key="up"] i    { left: 50%; top: 8%; transform: translateX(-50%); border-bottom-color: var(--key-ink); border-top-width: 0; }
+.wedge[data-key="down"] i  { left: 50%; bottom: 8%; transform: translateX(-50%); border-top-color: var(--key-ink); border-bottom-width: 0; }
+.wedge[data-key="left"] i  { top: 50%; left: 8%; transform: translateY(-50%); border-right-color: var(--key-ink); border-left-width: 0; }
+.wedge[data-key="right"] i { top: 50%; right: 8%; transform: translateY(-50%); border-left-color: var(--key-ink); border-right-width: 0; }
+.okbtn {
+  position: absolute; left: calc(var(--u) * 7.5); top: calc(var(--u) * 7.5);
+  width: calc(var(--u) * 11); height: calc(var(--u) * 11); border-radius: 50%; cursor: pointer;
+  background: radial-gradient(circle at 38% 32%, #fff, var(--key) 55%, #D3D4CF);
+  box-shadow: 0 0 0 calc(var(--u) * .9) #BFC0BB, 0 calc(var(--u) * .5) calc(var(--u) * 1) rgba(0,0,0,.25);
+}
+.backbtn {
+  border-radius: 50%; display: grid; place-items: center;
+  background: radial-gradient(circle at 38% 32%, #fff, var(--key) 55%, #D3D4CF);
+  box-shadow: 0 0 0 calc(var(--u) * .6) #C6C7C2, 0 calc(var(--u) * .5) calc(var(--u) * 1) rgba(0,0,0,.25);
+}
+.backbtn svg { width: 55%; height: 55%; pointer-events: none; }
+.wedge.pressed, .okbtn.pressed, .backbtn.pressed { background: #CFD0CB; box-shadow: inset 0 calc(var(--u) * .5) calc(var(--u) * 1) rgba(0,0,0,.3); }
+
+/* 上面・底面・側面 */
+.irwin { border-radius: calc(var(--u) * 2); background: linear-gradient(160deg, #4A1414, #1B0606); box-shadow: inset 0 calc(var(--u) * .4) calc(var(--u) * .8) rgba(0,0,0,.7); }
+.irwin::before { content: ""; position: absolute; left: 20%; top: 30%; width: 26%; height: 40%; border-radius: 50%; background: radial-gradient(circle, rgba(255,90,90,.5), transparent 70%); }
+.gpio { display: grid; grid-template-rows: auto 1fr; gap: calc(var(--u) * .4); }
+.gpio .labels, .gpio .pins { display: grid; grid-template-columns: repeat(18, 1fr); }
+.gpio .labels span { font: 700 calc(var(--u) * 1.05)/1 var(--font-mono); color: #555; text-align: center; letter-spacing: -.04em; }
+.gpio .pins { background: #1E1F21; border-radius: calc(var(--u) * .6); padding: calc(var(--u) * .5) 0; }
+.gpio .pins i { justify-self: center; align-self: center; width: calc(var(--u) * 1.1); height: calc(var(--u) * 1.1); background: #050505; box-shadow: inset 0 0 0 calc(var(--u) * .2) #6B6052; }
+.usbc { border-radius: calc(var(--u) * 1.7); background: #18191B; box-shadow: inset 0 0 0 calc(var(--u) * .45) #A8AAAD; }
+.usbc::before { content: ""; position: absolute; left: 22%; right: 22%; top: 42%; height: 16%; background: #5A5C5F; border-radius: 2px; }
+.sdslot { border-radius: calc(var(--u) * .6); background: #1A1B1D; box-shadow: inset 0 calc(var(--u) * .3) calc(var(--u) * .5) #000; }
+.ibtn { border-radius: calc(var(--u) * 2); background: #C7C8C3; box-shadow: inset 0 calc(var(--u) * .3) calc(var(--u) * .8) rgba(0,0,0,.35); }
+.ibtn::before, .ibtn::after { content: ""; position: absolute; top: 28%; height: 44%; border-radius: calc(var(--u) * .8); background: linear-gradient(#E9D9A6, #B89A4E); }
+.ibtn::before { left: 14%; width: 22%; }
+.ibtn::after { left: 46%; width: 40%; border-radius: 999px; }
+
+/* 背面（内部の透視イメージ） */
+.xray { border: calc(var(--u) * .35) dashed rgba(60,66,74,.55); border-radius: calc(var(--u) * 2); }
+.xray b { position: absolute; left: calc(var(--u) * 1); bottom: calc(var(--u) * .6); font: 700 calc(var(--u) * 1.6)/1.2 var(--font-mono); color: #4E545C; white-space: nowrap; }
+.coil { border-style: solid; border-color: rgba(181,120,40,.75); background:
+  repeating-radial-gradient(ellipse at 50% 50%, transparent 0 calc(var(--u) * 1.2), rgba(181,120,40,.35) calc(var(--u) * 1.2) calc(var(--u) * 1.6)); }
+.antenna { border-style: solid; border-color: rgba(181,120,40,.75); background: repeating-linear-gradient(90deg, rgba(181,120,40,.55) 0 calc(var(--u) * .5), transparent calc(var(--u) * .5) calc(var(--u) * 2)); border-radius: calc(var(--u) * .8); }
+.antenna b { bottom: auto; top: calc(var(--u) * 4); left: 0; }
+.chip { border-style: solid; background: #2C2F33; border-color: #1A1C1F; border-radius: calc(var(--u) * .6); }
+.chip b { color: #4E545C; bottom: calc(var(--u) * -2.6); left: calc(var(--u) * -1.6); }
+.sticker { position: absolute; border-radius: calc(var(--u) * 1); background: #E2E3DE; color: #6A6F76; padding: calc(var(--u) * .8); font: 600 calc(var(--u) * 1.3)/1.35 var(--font-mono); pointer-events: none; }
+
+.hint {
+  position: absolute; left: 12px; bottom: 10px; right: 12px; pointer-events: none;
+  font: 12px/1.5 var(--font-ui); color: var(--muted);
+}
+.power-indicator { position: absolute; right: 12px; top: 10px; font: 600 11px/1.4 var(--font-mono); color: var(--muted); pointer-events: none; }
+
+/* ツールバー */
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.seg { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); }
+.toolbar button, .info-nav button {
+  font: 600 13px/1 var(--font-ui); color: var(--ink); background: transparent;
+  border: 0; border-radius: 7px; padding: 9px 11px; cursor: pointer; min-height: 36px;
+}
+.toolbar button:hover, .info-nav button:hover { background: var(--accent-soft); }
+.toolbar button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+.toolbar button:focus-visible, .info-nav button:focus-visible, .parts button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* 解説パネル */
+.panel { display: grid; gap: 12px; min-width: 0; }
+.info { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; min-height: 280px; display: grid; gap: 12px; align-content: start; }
+.info h2 { margin: 0; font-size: 21px; line-height: 1.3; text-wrap: balance; }
+.info p { margin: 0; }
+.info-head { display: flex; gap: 12px; align-items: center; }
+.num { flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: #1C0E00; font: 800 15px/1 var(--font-mono); }
+.cat { font: 600 11px/1.4 var(--font-mono); letter-spacing: .1em; color: var(--accent-ink); }
+.specs { margin: 0; display: grid; border-top: 1px solid var(--line); }
+.specs div { display: grid; grid-template-columns: 7.5em 1fr; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.specs dt { color: var(--muted); font-size: 12.5px; }
+.specs dd { margin: 0; font-family: var(--font-mono); font-size: 12.5px; font-variant-numeric: tabular-nums; min-width: 0; overflow-wrap: anywhere; }
+.tip { padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); font-size: 13px; }
+.tip b { color: var(--accent-ink); margin-right: 6px; }
+.howto { margin: 0; padding-left: 1.2em; color: var(--muted); }
+.pinmap { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; }
+.pinmap span { display: grid; text-align: center; padding: 4px 0; border-radius: 6px; border: 1px solid var(--line); font: 600 11px/1.3 var(--font-mono); }
+.pinmap span small { color: var(--muted); font-weight: 400; }
+.pinmap span.pw { border-color: var(--accent); }
+.live { display: grid; gap: 4px; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); }
+.live .k { font: 600 10px/1.4 var(--font-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--accent-ink); }
+.live .v { font-size: 13.5px; }
+.info-nav { display: flex; gap: 6px; flex-wrap: wrap; }
+.info-nav button { border: 1px solid var(--line); }
+.info-nav .go { flex: 1; background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.info-nav .go:hover { background: var(--ink); opacity: .88; }
+
+.parts { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px; }
+.parts h2 { margin: 2px 6px 8px; font: 600 11px/1.4 var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.parts ol { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; }
+.parts button {
+  width: 100%; display: flex; gap: 8px; align-items: center; text-align: left;
+  font: 13px/1.3 var(--font-ui); color: var(--ink); background: transparent; border: 0; border-radius: 8px; padding: 7px 6px; cursor: pointer;
+}
+.parts button:hover { background: var(--accent-soft); }
+.parts button[aria-current="true"] { background: var(--ink); color: var(--bg); }
+.parts button .n { flex: none; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: #1C0E00; font: 800 11px/1 var(--font-mono); }
+
+footer { color: var(--muted); font-size: 12px; max-width: 80ch; }
+
+@media (prefers-reduced-motion: reduce) {
+  .mark { animation: none; }
+}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div>
+      <p class="eyebrow">Virtual model · 100.3 × 40.1 × 25.6 mm</p>
+      <h1>Flipper Zero 3D</h1>
+      <p class="lede">ドラッグで回して、ボタンや端子をタップすると説明が出ます。方向キー・OK・戻るで画面の中のメニューも実機そっくりに動きます。オフラインで動作します。</p>
+    </div>
+    <span class="offline">オフライン動作・外部読み込みなし</span>
+  </header>
+
+  <main class="layout">
+    <section class="viewer" aria-label="3Dモデル">
+      <div class="stage" id="stage" tabindex="0" aria-label="Flipper Zero の3Dモデル。矢印キー・Enter・Escで本体のボタンを操作できます">
+        <div class="floor"></div>
+        <div class="model" id="model"></div>
+        <p class="power-indicator" id="powerLabel"></p>
+        <p class="hint">ドラッグ：回転　ホイール／ピンチ：拡大　タップ：説明</p>
+      </div>
+      <div class="toolbar">
+        <div class="seg" id="views" role="group" aria-label="視点">
+          <button type="button" data-view="front">正面</button>
+          <button type="button" data-view="back">背面</button>
+          <button type="button" data-view="top">上面</button>
+          <button type="button" data-view="bottom">底面</button>
+          <button type="button" data-view="left">左側面</button>
+          <button type="button" data-view="right">右側面</button>
+        </div>
+        <div class="seg" role="group" aria-label="表示">
+          <button type="button" id="autoBtn" aria-pressed="false">自動回転</button>
+          <button type="button" id="markBtn" aria-pressed="true">番号マーカー</button>
+          <button type="button" id="powerBtn">電源オフ</button>
+          <button type="button" id="resetBtn">リセット</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="panel">
+      <article class="info" id="info" aria-live="polite"></article>
+      <nav class="parts" aria-label="パーツ一覧">
+        <h2>パーツ一覧</h2>
+        <ol id="partList"></ol>
+      </nav>
+    </aside>
+  </main>
+
+  <footer>
+    非公式の仮想モデルです。画面表示や操作はFlipper Zeroの公開ファームウェア（MITライセンス）の挙動を参考に再現したもので、電波・カード・赤外線などの実機能は含みません。寸法・部品の位置・内部構造は概略で、実機とは細部が異なります。実機を使う際は、各国の法律と対象機器の持ち主の許可の範囲内で利用してください。
+  </footer>
+</div>
+
+<script>
+const FONT_DATA = { primary: {"name":"u8g2_font_helvB08_tr","ascent":8,"descent":-2,"height":11,"glyphs":{"32":[3,0,0,0,1,""],"33":[4,2,8,1,0,"cccc880c"],"34":[5,3,3,1,5,"aaa"],"35":[6,7,7,-1,0,"28287e28fc5050"],"36":[6,5,10,0,-1,"2070a8e0703828a87020"],"37":[8,7,8,0,0,"62b46810102c568c"],"38":[8,7,8,0,0,"70d8d870deccdc76"],"39":[3,1,3,1,5,"888"],"40":[4,3,10,0,-2,"264cccc462"],"41":[4,3,10,0,-2,"8c466664c8"],"42":[4,3,3,0,5,"a4a"],"43":[6,6,5,0,1,"3030fc3030"],"44":[3,2,4,0,-2,"cc48"],"45":[5,4,1,0,3,"f"],"46":[3,2,2,0,0,"cc"],"47":[4,4,8,0,0,"11224488"],"48":[6,5,8,0,0,"70d8d8d8d8d8d870"],"49":[6,3,8,1,0,"6e666666"],"50":[6,5,8,0,0,"70d818183060c0f8"],"51":[6,5,8,0,0,"70d818301818d870"],"52":[6,6,8,0,0,"0818385898fc1818"],"53":[6,5,8,0,0,"f8c0c0f01898d870"],"54":[6,5,8,0,0,"70d8c0f0d8d8d870"],"55":[6,5,8,0,0,"f818183030606060"],"56":[6,5,8,0,0,"70d8d870d8d8d870"],"57":[6,5,8,0,0,"70d8d8d87818d870"],"58":[3,2,6,0,0,"cc00cc"],"59":[3,2,8,0,-2,"cc00cc48"],"60":[5,4,5,0,1,"36c63"],"61":[6,5,3,0,2,"f800f8"],"62":[5,4,5,0,1,"c636c"],"63":[6,5,8,0,0,"70d8183060600060"],"64":[11,10,9,0,-1,"1f06084d4924a24a489b04003e0"],"65":[8,7,8,0,0,"38386c6c6cfec6c6"],"66":[7,6,8,0,0,"f8ccccf8ccccccf8"],"67":[8,7,8,0,0,"3c66c2c0c0c2663c"],"68":[7,6,8,0,0,"f0d8ccccccccd8f0"],"69":[6,5,8,0,0,"f8c0c0f8c0c0c0f8"],"70":[6,5,8,0,0,"f8c0c0f0c0c0c0c0"],"71":[8,7,8,0,0,"3c66c2c0cec6663a"],"72":[7,6,8,0,0,"ccccccfccccccccc"],"73":[3,2,8,0,0,"cccccccc"],"74":[6,5,8,0,0,"181818181818d870"],"75":[7,7,8,0,0,"ccd8f0e0f0d8ccc6"],"76":[6,5,8,0,0,"c0c0c0c0c0c0c0f8"],"77":[10,9,8,0,0,"c18e38e38f78d58dd8c98c98"],"78":[8,7,8,0,0,"c6e6e6d6d6cecec6"],"79":[8,7,8,0,0,"386cc6c6c6c66c38"],"80":[7,6,8,0,0,"f8ccccccf8c0c0c0"],"81":[8,7,9,0,-1,"386cc6c6c6d66c3c02"],"82":[7,6,8,0,0,"f8ccccccf8cccccc"],"83":[7,6,8,0,0,"78cce0781c8ccc78"],"84":[7,6,8,0,0,"fc30303030303030"],"85":[7,6,8,0,0,"cccccccccccccc78"],"86":[8,7,8,0,0,"c6c66c6c6c383810"],"87":[11,10,8,0,0,"ccccccccc6d86d87f8330330"],"88":[8,7,8,0,0,"c6c66c38386cc6c6"],"89":[9,8,8,0,0,"c3c366663c181818"],"90":[7,6,8,0,0,"fc0c18307060c0fc"],"91":[4,3,10,0,-2,"ecccccccce"],"92":[4,4,8,0,0,"88442211"],"93":[4,3,10,0,-2,"e66666666e"],"94":[5,4,4,0,4,"6f99"],"95":[6,6,1,0,-2,"fc"],"96":[3,2,2,0,7,"84"],"97":[6,6,6,0,0,"709878d8d86c"],"98":[6,5,8,0,0,"c0c0f0d8d8d8d8f0"],"99":[5,4,6,0,0,"7dccd7"],"100":[6,5,8,0,0,"181878d8d8d8d878"],"101":[6,5,6,0,0,"70d8f8c0d870"],"102":[4,5,8,-1,0,"3860f06060606060"],"103":[6,5,8,0,-2,"68d8d8d8d8781870"],"104":[6,5,8,0,0,"c0c0f0d8d8d8d8d8"],"105":[3,2,8,0,0,"c0cccccc"],"106":[3,3,10,-1,-2,"606666666c"],"107":[6,6,8,0,0,"c0c0d8f0e0f0d8cc"],"108":[3,2,8,0,0,"cccccccc"],"109":[9,8,6,0,0,"b6dbdbdbdbdb"],"110":[6,5,6,0,0,"b0d8d8d8d8d8"],"111":[6,5,6,0,0,"70d8d8d8d870"],"112":[6,5,8,0,-2,"b0d8d8d8d8f0c0c0"],"113":[6,5,8,0,-2,"68d8d8d8d8781818"],"114":[4,4,6,0,0,"becccc"],"115":[6,5,6,0,0,"70d87018d870"],"116":[4,4,8,-1,0,"66f66663"],"117":[6,5,6,0,0,"d8d8d8d8d868"],"118":[6,5,6,0,0,"d8d8d8507020"],"119":[8,7,6,0,0,"d6d6d66c6c6c"],"120":[7,6,6,0,0,"cc783078cccc"],"121":[6,5,8,0,-2,"d8d8d8d878303060"],"122":[6,5,6,0,0,"f8183060c0f8"],"123":[5,4,10,0,-2,"3666c66663"],"124":[3,1,10,1,-2,"8888888888"],"125":[5,4,10,0,-2,"c66636666c"],"126":[6,5,2,0,3,"68b0"]}}, secondary: {"name":"secondary","ascent":7,"descent":-2,"height":11,"glyphs":{"32":[3,0,0,0,0,""],"33":[2,1,7,0,0,"8888808"],"34":[4,3,2,0,5,"aa"],"35":[6,5,5,0,1,"50f850f850"],"36":[6,5,7,0,0,"2078a07028f020"],"37":[6,5,7,0,0,"c0c81020409818"],"38":[6,5,7,0,0,"6090a040a89068"],"39":[2,1,2,0,5,"88"],"40":[3,2,7,0,0,"4888884"],"41":[3,2,7,0,0,"8444448"],"42":[4,3,3,0,3,"a4a"],"43":[6,5,5,0,1,"2020f82020"],"44":[3,2,3,0,-1,"448"],"45":[4,3,1,0,3,"e"],"46":[2,1,1,0,0,"8"],"47":[5,4,8,0,-1,"11224488"],"48":[5,4,7,0,0,"6999996"],"49":[4,3,7,0,0,"4c4444e"],"50":[5,4,7,0,0,"691248f"],"51":[5,4,7,0,0,"6916196"],"52":[5,4,7,0,0,"26aaf22"],"53":[5,4,7,0,0,"f8e1196"],"54":[5,4,7,0,0,"688e996"],"55":[5,4,7,0,0,"f112244"],"56":[5,4,7,0,0,"6996996"],"57":[5,4,7,0,0,"6997116"],"58":[2,1,5,0,0,"80008"],"59":[3,2,6,0,-1,"400048"],"60":[4,3,5,0,1,"24842"],"61":[5,4,3,0,2,"f0f"],"62":[4,3,5,0,1,"84248"],"63":[5,4,7,0,0,"6912404"],"64":[6,5,7,0,0,"7088b8a8b08070"],"65":[5,4,7,0,0,"699f999"],"66":[5,4,7,0,0,"e99e99e"],"67":[5,4,7,0,0,"6988896"],"68":[5,4,7,0,0,"e99999e"],"69":[5,4,7,0,0,"f88e88f"],"70":[5,4,7,0,0,"f88e888"],"71":[5,4,7,0,0,"698b997"],"72":[5,4,7,0,0,"999f999"],"73":[4,3,7,0,0,"e44444e"],"74":[5,4,7,0,0,"7111196"],"75":[5,4,7,0,0,"99aca99"],"76":[5,4,7,0,0,"888888f"],"77":[6,5,7,0,0,"88d8a8a8888888"],"78":[6,5,7,0,0,"88c8a8a8988888"],"79":[6,5,7,0,0,"70888888888870"],"80":[5,4,7,0,0,"e99e888"],"81":[6,5,7,0,0,"70888888a89068"],"82":[5,4,7,0,0,"e99ea99"],"83":[5,4,7,0,0,"6986196"],"84":[6,5,7,0,0,"f8202020202020"],"85":[5,4,7,0,0,"9999996"],"86":[6,5,7,0,0,"88888888505020"],"87":[6,5,7,0,0,"888888a8a8d888"],"88":[6,5,7,0,0,"88885020508888"],"89":[6,5,7,0,0,"88885020202020"],"90":[5,4,7,0,0,"f11248f"],"91":[3,2,7,0,0,"c88888c"],"92":[5,4,8,0,-1,"88442211"],"93":[3,2,7,0,0,"c44444c"],"94":[4,3,2,0,5,"4a"],"95":[5,4,1,0,-1,"f"],"96":[3,2,2,0,5,"84"],"97":[5,4,5,0,0,"61797"],"98":[5,4,7,0,0,"88e999e"],"99":[4,3,5,0,0,"68886"],"100":[5,4,7,0,0,"1179997"],"101":[5,4,5,0,0,"69f87"],"102":[4,3,7,0,0,"68e8888"],"103":[5,4,7,0,-2,"7999716"],"104":[5,4,7,0,0,"88e9999"],"105":[2,1,7,0,0,"8088888"],"106":[3,2,9,0,-2,"404444448"],"107":[5,4,7,0,0,"889aca9"],"108":[3,2,7,0,0,"8888884"],"109":[6,5,5,0,0,"f0a8a8a8a8"],"110":[5,4,5,0,0,"e9999"],"111":[5,4,5,0,0,"69996"],"112":[5,4,7,0,-2,"e999e88"],"113":[5,4,7,0,-2,"7999711"],"114":[4,3,5,0,0,"ac888"],"115":[5,4,5,0,0,"7861e"],"116":[4,3,7,0,0,"44e4442"],"117":[5,4,5,0,0,"99997"],"118":[6,5,5,0,0,"8888505020"],"119":[6,5,5,0,0,"8888a8a850"],"120":[5,4,5,0,0,"99699"],"121":[5,4,7,0,-2,"9999716"],"122":[5,4,5,0,0,"f168f"],"123":[4,3,7,0,0,"6448446"],"124":[2,1,8,0,-1,"88888888"],"125":[4,3,7,0,0,"c44244c"],"126":[6,5,2,0,3,"68b0"]}}, keyboard: {"name":"u8g2_font_profont11_mr","ascent":7,"descent":-2,"height":11,"glyphs":{"32":[6,6,11,0,-2,"0000000000000000000000"],"33":[6,6,11,0,-2,"0000202020202000200000"],"34":[6,6,11,0,-2,"0050505000000000000000"],"35":[6,6,11,0,-2,"000050f850f85000000000"],"36":[6,6,11,0,-2,"002070a8a07028a8702000"],"37":[6,6,11,0,-2,"000078a8b05068a8900000"],"38":[6,6,11,0,-2,"00006090a040a890680000"],"39":[6,6,11,0,-2,"0020202000000000000000"],"40":[6,6,11,0,-2,"0010204040404040201000"],"41":[6,6,11,0,-2,"0040201010101010204000"],"42":[6,6,11,0,-2,"000020a870a82000000000"],"43":[6,6,11,0,-2,"0000002020f82020000000"],"44":[6,6,11,0,-2,"0000000000000060602040"],"45":[6,6,11,0,-2,"0000000000700000000000"],"46":[6,6,11,0,-2,"0000000000000030300000"],"47":[6,6,11,0,-2,"0008081010202040408080"],"48":[6,6,11,0,-2,"0000708898a8c888700000"],"49":[6,6,11,0,-2,"000020e020202020f80000"],"50":[6,6,11,0,-2,"0000708808102040f80000"],"51":[6,6,11,0,-2,"0000708808300888700000"],"52":[6,6,11,0,-2,"000010305090f810380000"],"53":[6,6,11,0,-2,"0000f880f0080888700000"],"54":[6,6,11,0,-2,"00007080f0888888700000"],"55":[6,6,11,0,-2,"0000f80808102020200000"],"56":[6,6,11,0,-2,"0000708888708888700000"],"57":[6,6,11,0,-2,"0000708888887808700000"],"58":[6,6,11,0,-2,"0000000030300030300000"],"59":[6,6,11,0,-2,"0000000060600060602040"],"60":[6,6,11,0,-2,"0000081020402010080000"],"61":[6,6,11,0,-2,"00000000f800f800000000"],"62":[6,6,11,0,-2,"0000402010081020400000"],"63":[6,6,11,0,-2,"0000708808102000200000"],"64":[6,6,11,0,-2,"00007088b8a8b880780000"],"65":[6,6,11,0,-2,"000020505088f888880000"],"66":[6,6,11,0,-2,"0000f08888f08888f00000"],"67":[6,6,11,0,-2,"0000708880808088700000"],"68":[6,6,11,0,-2,"0000f08888888888f00000"],"69":[6,6,11,0,-2,"0000f88080f08080f80000"],"70":[6,6,11,0,-2,"0000f88080f08080800000"],"71":[6,6,11,0,-2,"0000708880988888700000"],"72":[6,6,11,0,-2,"0000888888f88888880000"],"73":[6,6,11,0,-2,"0000f82020202020f80000"],"74":[6,6,11,0,-2,"0000080808088888700000"],"75":[6,6,11,0,-2,"00008890a0c0a090880000"],"76":[6,6,11,0,-2,"0000808080808080f80000"],"77":[6,6,11,0,-2,"000088d8a8a88888880000"],"78":[6,6,11,0,-2,"000088c8a8988888880000"],"79":[6,6,11,0,-2,"0000708888888888700000"],"80":[6,6,11,0,-2,"0000f08888f08080800000"],"81":[6,6,11,0,-2,"00007088888888a8700800"],"82":[6,6,11,0,-2,"0000f08888f08888880000"],"83":[6,6,11,0,-2,"0000708880700888700000"],"84":[6,6,11,0,-2,"0000f82020202020200000"],"85":[6,6,11,0,-2,"0000888888888888700000"],"86":[6,6,11,0,-2,"0000888888505020200000"],"87":[6,6,11,0,-2,"0000888888a8a8d8880000"],"88":[6,6,11,0,-2,"0000888850205088880000"],"89":[6,6,11,0,-2,"0000888888502020200000"],"90":[6,6,11,0,-2,"0000f80810204080f80000"],"91":[6,6,11,0,-2,"0030202020202020203000"],"92":[6,6,11,0,-2,"0040402020101008080404"],"93":[6,6,11,0,-2,"0060202020202020206000"],"94":[6,6,11,0,-2,"0000205088000000000000"],"95":[6,6,11,0,-2,"00000000000000000000fc"],"96":[6,6,11,0,-2,"0040200000000000000000"],"97":[6,6,11,0,-2,"0000000078888898680000"],"98":[6,6,11,0,-2,"00008080f0888888f00000"],"99":[6,6,11,0,-2,"0000000070888080780000"],"100":[6,6,11,0,-2,"0000080878888888780000"],"101":[6,6,11,0,-2,"000000007088f880780000"],"102":[6,6,11,0,-2,"0000182070202020200000"],"103":[6,6,11,0,-2,"0000000078888888780870"],"104":[6,6,11,0,-2,"00008080f0888888880000"],"105":[6,6,11,0,-2,"0000200060202020700000"],"106":[6,6,11,0,-2,"00002000602020202020c0"],"107":[6,6,11,0,-2,"0000808090a0e090880000"],"108":[6,6,11,0,-2,"0000602020202020700000"],"109":[6,6,11,0,-2,"00000000f0a8a8a8a80000"],"110":[6,6,11,0,-2,"00000000b0c88888880000"],"111":[6,6,11,0,-2,"0000000070888888700000"],"112":[6,6,11,0,-2,"00000000f0888888f08080"],"113":[6,6,11,0,-2,"0000000078888888780808"],"114":[6,6,11,0,-2,"00000000b0c88080800000"],"115":[6,6,11,0,-2,"0000000078807008f00000"],"116":[6,6,11,0,-2,"0000202070202020180000"],"117":[6,6,11,0,-2,"0000000088888898680000"],"118":[6,6,11,0,-2,"0000000088885050200000"],"119":[6,6,11,0,-2,"00000000a8a8a8a8500000"],"120":[6,6,11,0,-2,"0000000088502050880000"],"121":[6,6,11,0,-2,"0000000088888888780870"],"122":[6,6,11,0,-2,"00000000f8102040f80000"],"123":[6,6,11,0,-2,"1020202020402020202010"],"124":[6,6,11,0,-2,"0020202020202020202000"],"125":[6,6,11,0,-2,"4020202020102020202040"],"126":[6,6,11,0,-2,"0000000068b00000000000"],"127":[6,6,11,0,-2,"0000000000000000000000"]}}, bignum: {"name":"u8g2_font_profont22_tn","ascent":14,"descent":-4,"height":20,"glyphs":{"32":[12,0,0,0,0,""],"42":[12,10,10,0,4,"0c00c0cccffc3f03f0ffcccc0c00c0"],"43":[12,10,10,0,2,"0c00c00c00c0ffcffc0c00c00c00c0"],"44":[12,5,9,2,-4,"30787838183870e040"],"45":[12,6,2,2,6,"fcfc"],"46":[12,4,4,3,1,"6ff6"],"47":[12,11,20,0,-4,"00600600c00c0180180300300600600c00c0180180300300600600c00c00"],"48":[12,10,14,0,0,"3f07f8e1cc1cc3cc7ccecdccf8cf0ce0ce1c7f83f0"],"49":[12,10,14,0,0,"0c00c07c07c00c00c00c00c00c00c00c00c0ffcffc"],"50":[12,10,14,0,0,"3f07f8e1cc0c00c01c0380700e01c0380700ffcffc"],"51":[12,10,14,0,0,"3f07f8e1cc0c00c0180f00f801c00cc0ce1c7f83f0"],"52":[12,10,14,0,0,"0300700f01f03b0730e30c30ffcffc0300300fc0fc"],"53":[12,10,14,0,0,"ffcffcc00c00ff0ff801c00c00c00cc0ce1c7f83f0"],"54":[12,10,14,0,0,"3f07f0e00c00ff0ff8c1cc0cc0cc0cc0ce1c7f83f0"],"55":[12,10,14,0,0,"ffcffc00c00c00c01c0380700e00c00c00c00c00c0"],"56":[12,10,14,0,0,"3f07f8e1cc0cc0c6183f07f8e1cc0cc0ce1c7f83f0"],"57":[12,10,14,0,0,"3f07f8e1cc0cc0cc0cc0ce0c7fc3fc00c01c3f83f0"],"58":[12,4,10,3,1,"6ff6006ff6"]}} };
+const ART_DATA = {"anim_swim_0":[128,51,"000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000030000002000000000000000000000000d0000005000000000000000000400001a0000002000000000000000000600002300000000000000000000000003000041000000000000000000000000038000c7ffc000000000000000000000028000f800780000200000000000000003400180000c00005000000000000000012006000002000020000000000000000110080000630000000000000000000001183000006180000000000000000000010840000000c000000000000000000001058000000020000000000000000000010700000007e0000000000000000000010200000007c004000000000000000001020000001c000a0000000000000000013fc00000600004000000000000000003e03e00038000000000000000000000030001fc1c00000000000000000000000000000840000000000000000000000000000008c0000000000000000000000000000011800000000000000000000000000000360000000000000000000000000000003c000000000000000000000000000000600000000000000000000000000000000000000000000000000000000000000000000000000000000001f8007e001f8007e001f8007e001f8c0e070381c0e070381c0e070381c0e073f000fc003f000fc003f000fc003f0000000000000000000000000000000000001fe0007f8001fe0007f8001fe0007f80e01c0380700e01c0380700e01c03807f0003fc000ff0003fc000ff0003fc000000000000000000000000000000000000ff00003fc0000ff00003fc0000ff000f00f807c03e01f00f807c03e01f00f8000007f80001fe00007f80001fe00007f00000000000000000000000000000000"],"anim_swim_1":[128,51,"0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000030000002000000000000000000000000d0000005000000000000000000000001a0000002000000000000000000000002300000000000000000000000000000041000000000000000000000000000000c7ffc000002000000000000000040000f800780000500000000000000006000180000c00002000000000000000030006000002000000000000000000000280080000630000000000000000000001603000006180000000000000000000013040000000c000000000000000000001198000000020040000000000000000010500000007e00a0000000000000000010200000007c004000000000000000001020000001c000000000000000000000107c000006000000000000000000000011c3e00038000000000000000000000013001fc1c000000000000000000000003c0000840000000000000000000000003800008c0000000000000000000000002000011800000000000000000000000000000360000000000000000000000000000003c0000000000000000000000000000006000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001f8007e001f8007e001f8007e001f800e070381c0e070381c0e070381c0e070f000fc003f000fc003f000fc003f000f000000000000000000000000000000001fe0007f8001fe0007f8001fe0007f80e01c0380700e01c0380700e01c0380700003fc000ff0003fc000ff0003fc000f00000000000000000000000000000000ff00003fc0000ff00003fc0000ff000000f807c03e01f00f807c03e01f00f8070007f80001fe00007f80001fe00007f800000000000000000000000000000000"],"anim_swim_2":[128,51,"0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000200000000000000000000000030000005000000000000000000000000d0000002000000000000000000000001a0000000000000000000000000000002300000000200000000000000000000041000000005000000000000000000000c7ffc000002000000000000000000000f800780000000000000000000000000180000c000000000000000000000000060000020000000000000000000000000800006300040000000000000000060030000061800a0000000000000000030040000000c004000000000000000003818000000020000000000000000000017100000007e0000000000000000000011e00000007c000000000000000000001020000001c000000000000000000000103c000006000000000000000000000010c3e00038000000000000000000000011801fc1c00000000000000000000000130000840000000000000000000000001200008c0000000000000000000000001400011800000000000000000000000028000360000000000000000000000000300003c000000000000000000000000020000600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001f8007e001f8007e001f8007e001f800e070381c0e070381c0e070381c0e0703000fc003f000fc003f000fc003f000fc00000000000000000000000000000000fe0007f8001fe0007f8001fe0007f80001c0380700e01c0380700e01c0380700003fc000ff0003fc000ff0003fc000ff00000000000000000000000000000000f00003fc0000ff00003fc0000ff000030f807c03e01f00f807c03e01f00f807c007f80001fe00007f80001fe00007f8000000000000000000000000000000000"],"anim_swim_3":[128,51,"000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000050000000000000000000000000000000200000000000000000000000030000000020000000000000000000000d0000000050000000000000000000001a0000000020000000000000000000002300000000000000000000000000000041000000000000000000000000000000c7ffc000040000000000000000040000f80078000a000000000000000006000180000c00040000000000000000030006000002000000000000000000000280080000630000000000000000000001603000006180000000000000000000013040000000c000000000000000000001198000000020000000000000000000010500000007e0000000000000000000010200000007c000000000000000000001020000001c000000000000000000000107c000006000000000000000000000011c3e00038000000000000000000000013001fc1c000000000000000000000003c0000840000000000000000000000003800008c0000000000000000000000002000011800000000000000000000000000000360000000000000000000000000000003c000000000000000000000000000000600000000000000000000000000000000000000000000000000000000000000000000000000000000f8007e001f8007e001f8007e001f8007070381c0e070381c0e070381c0e0703800fc003f000fc003f000fc003f000fc000000000000000000000000000000000e0007f8001fe0007f8001fe0007f80011c0380700e01c0380700e01c0380700e03fc000ff0003fc000ff0003fc000ff00000000000000000000000000000000000003fc0000ff00003fc0000ff00003ff807c03e01f00f807c03e01f00f807c007f80001fe00007f80001fe00007f80000000000000000000000000000000000"],"anim_swim_blink":[128,51,"000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000030000000000000000000000000000000d0000000000000000000000000400001a0000000000000000000000000600002300000000000000000000000003000041000000000000000000000000038000c7ffc000000000000000000000028000f800780000000000000000000003400180000c0000000000000000000001200600000200000000000000000000011008000003000000000000000000000118300000e180000000000000000000010840000000c000000000000000000001058000000020000000000000000000010700000007e0000000000000000000010200000007c000000000000000000001020000001c00000000000000000000013fc00000600000000000000000000003e03e00038000000000000000000000030001fc1c00000000000000000000000000000840000000000000000000000000000008c0000000000000000000000000000011800000000000000000000000000000360000000000000000000000000000003c000000000000000000000000000000600000000000000000000000000000000000000000000000000000000000000000000000000000000001f8007e001f8007e001f8007e001f8c0e070381c0e070381c0e070381c0e073f000fc003f000fc003f000fc003f0000000000000000000000000000000000001fe0007f8001fe0007f8001fe0007f80e01c0380700e01c0380700e01c03807f0003fc000ff0003fc000ff0003fc000000000000000000000000000000000000ff00003fc0000ff00003fc0000ff000f00f807c03e01f00f807c03e01f00f8000007f80001fe00007f80001fe00007f00000000000000000000000000000000"],"anim_sleep_0":[128,51,"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003f000000000000000000000000000000020000000000000000000000000000000400000000000000000000000000000008000000000000000000000000000000100000000000000000000000000000003f0000000000000000000000000000000000000000000000000000000000003e0000000000000000000000000000000400000000000000000000000000000008000000000000000000000000000000100000000000000000000000000000003e000000000000000000000000000000000000000000000000000000c00000000000000000000000000000034000003c00000000000000000000000680000008000000000000000000000008c00000100000000000000000000000104000003c000000000000000000000031fff0000000000000000000000100003e001e000000000000000000000180006000030000000000000000000000c0018000008000000000000000000000a002000000c000000000000000000000580c00003860000000000000000000004c100000003000000000000000000000466000000008000000000000000000004140000001f8000000000000000000004080000001f0000000000000000000004080000007000000000000000000000041f00000180000000000000000000000470f8000e000000000000000000000004c007f07000000000000000000000000f0000210000000000000000000000000e00002300000000000000000000000008000046000000000000000000000000000000d8000000000000000000000000000000f00000000000000000000000000000018000000000000000000ffffffffffffffffffffffffffffffff00000000000000000000000000000000820820820820820820820820820820820000000000000000000000000000000000000000000000000000000000000000"],"anim_sleep_1":[128,51,"0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003f000000000000000000000000000000020000000000000000000000000000000400000000000000000000000000000008000000000000000000000000000000100000000000000000000000000000003f0000000000000000000000000000000000000000000000000000000000003e0000000000000000000000000000000400000000000000000000000000000008000000000000000000000000000000100000000000000000000000000000003e000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003c00000000000000000000000000000008000000000000000000000000c00000100000000000000000000000034000003c00000000000000000000000680000000000000000000000000000008c000000000000000000000000000001040000000000000000000000000000031fff0000000000000000000000100003e001e000000000000000000000180006000030000000000000000000000c0018000008000000000000000000000a002000000c000000000000000000000580c00003860000000000000000000004c100000003000000000000000000000466000000008000000000000000000004140000001f8000000000000000000004080000001f0000000000000000000004080000007000000000000000000000041f00000180000000000000000000000470f8000e000000000000000000000004c007f07000000000000000000000000f0000210000000000000000000000000e00002300000000000000000000000008000046000000000000000000000000000000d8000000000000000000000000000000f000000000000000000ffffffffffffffffffffffffffffffff00000000000000000000000000000000104104104104104104104104104104100000000000000000000000000000000000000000000000000000000000000000"],"dolph_cry":[49,54,"000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003000000000000d000000000001a0000000000023000000000004100400000000c7ffc00040000f80078006000180004c003000600004200280080000a300160300000e18013040000040c0119800000002010500000007e010200000007c01020000001c00107c00000600011c3e0003800013001fc1c00003c000084000003800008c0000020000118000000000036000000000003c00000000000600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000aaaaaaaaaaaa80000000000000000000000000000000000000000ffffffffff80000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"],"dolphin_wait":[59,54,"00000000000000000000000000000000000000000fff8000000000007ff0000000000002020000000000002020000000000001040000000000000880000000000000500000000000000500000000000000200000000000000500000000000000500000000000000a80000000300001740000000d00002fa0400001a00002020600002300007ff030000410000fff838000c7ffc0000028000f8007800003400180000c000012006000002000011008000063000011830000061800010840000000c00010580000000200010700000007e00010200000007c0001020000001c000013fc000006000003e03e000380000030001fc1c0000000000008400000000000008c0000000000001180000000000003600000000000003c000000000000060000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffffffffffffe0000000000000000000000000000000000000000000000"],"warning_dolphin":[45,42,"00000003fff800000002000800000002040800000002040800000002040800000002040800000002040800000002000800000002000800000002040800000002000800000003fff800000000800000000000800000000601000000001a00000000003400000000004600000000008200000000018fff00000001f001e000000300003000000c00000800801000018c0070e0000187001b0000000080060000003d80020000001f000200000070000780000180001c7c020e00003003f8700000c0001080000080001180000000002300000000006c0000000000780000000000c0000000000000000000000000000000000000000000000000000000"],"portrait_happy":[46,49,"fffffffffffc8000000000048000000000048000000000048000000000048000000000048000000000048000000000048000600000048003a00000048002400000048006400000048018600000048020200000048020200000048060ffff8004807f0000f80480c000000c04810000000204860000000104880000008184900000014084e000000000c480000000007480000000000c8000000007cc80000000001c8000000007f4800000001c0480000000200480000000c004fe00800f000481ff89f0000480020200000480020400000480020c000004800438000004800420000004800cc0000004800f80000004803800000004800000000004800000000004800000000004800000000004800000000004800000000004800000000004fffffffffffc"],"portrait_ok":[46,49,"fffffffffffc8000000000048000000000048000000000048000000000048000000000048000000000048000000000048000600000048003a00000048002400000048006400000048018600000048020200000048020200000048060ffff8004807f0000f80480c000000c0481000000020486000000010488000000c18490000000c084e000000000c480000000007480000000000c8000000007cc80000000001c8000000007f4800000001c0480000000200480000000c004fe00800f000481ff89f0000480020200000480020400000480020c000004800438000004800420000004800cc0000004800f80000004803800000004800000000004800000000004800000000004800000000004800000000004800000000004800000000004fffffffffffc"],"portrait_bad":[46,49,"fffffffffffc8000000000048000000000048000000000048000000000048000000000048000000000048000000000048000600000048003a00000048002400000048006400000048018600000048020200000048020200000048060ffff8004807f0000f80480c000000c0481000000020486000000010488000001018490000000c084e000000000c480000000007480000000000c8000000007cc80000000001c8000000007f4800000001c0480000000200480000000c004fe00800f000481ff89f0000480020200000480020400000480020c000004800438000004800420000004800cc0000004800f80000004803800000004800000000004800000000004800000000004800000000004800000000004800000000004800000000004fffffffffffc"],"nfc_manual":[60,50,"00000000000000000000000000000000001ffffffff00000020000000080000020000000080000020000000084000023fc0000082000022040000081000022040000088000022040000084000022040000084000023fc0000084000020000000088000020000000081000020000000082000020000000084000023fffffe080000020000000080000023fffe0008000002000000008000002000000008000002000000008001fffffffffff00060000000000c0004000000000040009ffff81e000200090004861f0020009000488248020009000488444020009000490c220200090004912e1020009000491331020009000491d31020009fffc891510200090000890e1020009ffff86982020008000001e040200080000002080200080000001f00200080000000000200080000000000200080000000000200040000000000400060000000000c0001ffffffffff000000000000000000000000000000000000000000000000000000000000000000000000000000"],"scanning":[96,52,"00000000000088400000000000000000001c44400000000000000000002244400000000000000000002244400000000000000000002244400000000000000000001c4440000000000000000000080840000000000000000000100880000000000000000000100080000000000000000000100080000000000000000000100000000000000000000000100000000000000000000000200000000000000000000000200000000000000000000000200000000000000000000000200000000000000000000000200000000000000000000000400000000000000000000000400000000000000000000000400000000000000000000000400000000000000000000000400000000000000000000c00800000000000000000003400800000000000000000006800800000000000000000008c00000000000000000000010400000000000000000000031fff00000000000000100003e001e00000000000001800060000300000000000000c00180000080000000000000a002000018c0000000000000580c000018600000000000004c10000000300000000000004660000000080000000000004140000001f80000000000004080000001f000000000000040800000070000000000000041f000001800000000000000470f8000e0000000000000004c007f070000000000000000f00002100000000000000000e0000230000000000000000080000460000000000000000000000d80000000000000000000000f00000000000000000000001800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"],"ir_learn":[128,31,"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ffffffffc003fffffffe0000000000060000000030040000000100000000000400000000100800000000800000000009fffc01e008080000000080080808081d0004061808080000000080040404041d0004080408087c7c7c00e0040404041d00040804080844444400e0020202021d000410c2080844444400e0020202021d00041122080844444400e002020202090004112208087c7c7c00e00202020209000410c2080800000000e00202020209fffc0804080800000000e004040404080000080408080000000080040404040800000618080800000000800808080808000001e008080000000080000000000800000000080400000001000000000008000000000803fffffffe000000000008000000000800000000000000000000040000000010000000000000000000000600000000300000000000000000000001ffffffffc00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"],"usb_tree":[48,22,"000000000000000000000000ffffc0000000800040000000bfff40000000a00140007ffea00140008001a001400f8001a001400f9f01a0017fff9101a001400f9f01a001400f8001bfff40008001800040007ffe800040000000ffffc000000000800000000000800000000000800000000007f800000000000000000000000000000000"],"drive":[112,35,"1ffffffffffffffffffffffffff8200000000000000000000000000447ffffffffffffffffffffffffe298000000000000000000000000199000000000000000000000000009a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a000000000000000000000000005a0000000000000000000000000059000000000000000000000000009980000000000000000000000001947ffffffffffffffffffffffffe220000000000000000000000000041ffffffffffffffffffffffffff8"],"connect_me":[62,31,"0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003fffffe0000000002000002000000000200000200003ffffe00000200002000020000020000200002000002010027800200000200802780020000020040200002000003ffe027800200000200402780020000020080200002000002010020000200000200003ffffe000002000000000200000200000000020000020000000003fffffe00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"],"battery_body":[52,28,"1ffffffffff8060000000000604ffffffffff209000000000090a000000000050a000000000050a000000000050a000000000050a000000000050a03800007005fa03800007005fa03800007005fa03800007005fa00000000005fa00000000005fa00000000005fa00000000005fa00040040005fa000600c0005fa000183000050a00007c000050a000000000050a000000000050a00000000005090000000000904ffffffffff2060000000000601ffffffffff80"],"door_L":[70,55,"fffffffffffffffffc8000000000000000048000000000000000049fffffffffffffffe490000000000000002490000000000000002494000000000000002490000000000000002493ffffffffffffff2490000000000000002494000000000000002490000000000000002490000000000000002490000000000000002494000000000000002490000000000000002493ffffffffffffff24900000000000000024940000000000000024900000000000000024900000000000000024900000000000000024940000000000000f2490000000000000092493fffffffffffff92490000000000000092494000000000000092490000000000000092490000000000000092490000000000000092494000000000000092490000000000000092493ffffffffffffff2490000000000000002494000000000000002490000000000000002490000000000000002490000000000000002494000000000000002490000000000000002493ffffffffffffff2490000000000000002494000000000000002490000000000000002490000000000000002490000000000000002494000000000000002490000000000000002493ffffffffffffff249000000000000000249400000000000000249fffffffffffffffe4800000000000000004800000000000000004fffffffffffffffffc"],"door_R":[70,55,"fffffffffffffffffc8000000000000000048000000000000000049fffffffffffffffe49000000000000000249000000000000000249000000000000000a490000000000000002493ffffffffffffff249000000000000000249000000000000000a49000000000000000249000000000000000249000000000000000249000000000000000a490000000000000002493ffffffffffffff249000000000000000249000000000000000a490000000000000002490000000000000002490000000000000002493c0000000000000a4924000000000000024927fffffffffffff249240000000000000249240000000000000a49240000000000000249240000000000000249240000000000000249240000000000000a492400000000000002493ffffffffffffff249000000000000000249000000000000000a49000000000000000249000000000000000249000000000000000249000000000000000a490000000000000002493ffffffffffffff249000000000000000249000000000000000a49000000000000000249000000000000000249000000000000000249000000000000000a490000000000000002493ffffffffffffff249000000000000000249000000000000000a49fffffffffffffffe4800000000000000004800000000000000004fffffffffffffffffc"],"passport_bottom":[128,18,"80000000000000000000000000000001800000000000003ffffffffffffffff9800000000000003ffffffffffffffff9fc0000000000003ffffffffffffffff8040000000000003ffffffffffffffff8040000000000003ffffffffffffffff8040000000000003ffffffffffffffff8040000000000003ffffffffffffffff807ffffffffffffffffffffffffffffff000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003ffffffffffff800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"]};
+</script>
+<script>
+(() => {
+
+  'use strict';
+  const W = 128, H = 64;
+  const now = () => performance.now();
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+  /* ---------- bitmaps & fonts ---------- */
+  function hexBitmap([w, h, hex]) {
+    const digits = Math.max(1, (w + 3) >> 2);
+    const bits = new Uint8Array(w * h);
+    for (let r = 0; r < h; r++) {
+      for (let c = 0; c < w; c++) {
+        const nib = parseInt(hex[r * digits + (c >> 2)], 16);
+        bits[r * w + c] = (nib >> (3 - (c & 3))) & 1;
+      }
+    }
+    return { w, h, bits };
+  }
+  function rowsBitmap(rows) {
+    const w = Math.max(...rows.map(r => r.length));
+    const bits = new Uint8Array(w * rows.length);
+    rows.forEach((r, y) => { for (let x = 0; x < r.length; x++) bits[y * w + x] = r[x] === '#' ? 1 : 0; });
+    return { w, h: rows.length, bits };
+  }
+  function hexFont(spec) {
+    const glyphs = new Map();
+    for (const [code, [adv, w, h, xo, yo, hex]] of Object.entries(spec.glyphs)) {
+      glyphs.set(+code, { adv, w, h, xo, yo, bits: w && h ? hexBitmap([w, h, hex]).bits : new Uint8Array(0) });
+    }
+    return { ascent: spec.ascent, height: spec.height, glyphs };
+  }
+  const FONTS = {
+    primary: hexFont(FONT_DATA.primary),
+    secondary: hexFont(FONT_DATA.secondary),
+    keyboard: hexFont(FONT_DATA.keyboard),
+    bignum: hexFont(FONT_DATA.bignum),
+  };
+  const ART = {};
+  for (const [name, spec] of Object.entries(ART_DATA)) ART[name] = hexBitmap(spec);
+  const I = rows => rowsBitmap(rows);
+
+  /* ---------- canvas (draw semantics follow the firmware's canvas/u8g2) ---------- */
+  class Canvas {
+    constructor() { this.fb = new Uint8Array(W * H); this.reset(); }
+    reset() { this.ox = 0; this.oy = 0; this.w = W; this.h = H; this.color = 1; this.font = FONTS.secondary; this.transparent = false; this.vertical = false; this.rot = 0; }
+    // rot 3 = vertical view (logical 64x128 drawn rotated into the 128x64 panel, like u8g2 R3)
+    setRot(r) { this.rot = r; this.w = r ? H : W; this.h = r ? W : H; }
+    setFrame(x, y, w, h) { this.ox = x; this.oy = y; this.w = w; this.h = h; }
+    clear() { this.fb.fill(0); }
+    setColor(c) { this.color = c; }            // 1 black, 0 white, 2 xor
+    invert() { this.color = this.color === 1 ? 0 : this.color === 0 ? 1 : 2; }
+    pset(x, y) {
+      x += this.ox; y += this.oy;
+      if (this.rot === 3) { const nx = y, ny = H - 1 - x; x = nx; y = ny; }
+      if (x < 0 || y < 0 || x >= W || y >= H) return;
+      const i = y * W + x;
+      this.fb[i] = this.color === 2 ? this.fb[i] ^ 1 : this.color;
+    }
+    dot(x, y) { this.pset(x, y); }
+    hline(x, y, n) { for (let i = 0; i < n; i++) this.pset(x + i, y); }
+    vline(x, y, n) { for (let i = 0; i < n; i++) this.pset(x, y + i); }
+    line(x1, y1, x2, y2) {
+      let dx = Math.abs(x2 - x1), dy = Math.abs(y2 - y1), swap = false;
+      if (dy > dx) { swap = true; [dx, dy] = [dy, dx]; [x1, y1] = [y1, x1]; [x2, y2] = [y2, x2]; }
+      if (x1 > x2) { [x1, x2] = [x2, x1]; [y1, y2] = [y2, y1]; }
+      let err = dx >> 1; const ystep = y2 > y1 ? 1 : -1; let y = y1;
+      for (let x = x1; x <= x2; x++) {
+        if (swap) this.pset(y, x); else this.pset(x, y);
+        err -= dy;
+        if (err < 0) { y += ystep; err += dx; }
+      }
+    }
+    box(x, y, w, h) { for (let j = 0; j < h; j++) this.hline(x, y + j, w); }
+    rect(x, y, w, h) {
+      if (w <= 0 || h <= 0) return;
+      this.hline(x, y, w);
+      if (h >= 2) { if (h > 2) { this.vline(x, y + 1, h - 2); this.vline(x + w - 1, y + 1, h - 2); } this.hline(x, y + h - 1, w); }
+    }
+    circleSection(x, y, x0, y0, o, disc) {
+      const P = disc ? (a, b, n) => this.vline(a, b, n) : (a, b) => this.pset(a, b);
+      if (disc) {
+        if (o & 1) { P(x0 + x, y0 - y, y + 1); P(x0 + y, y0 - x, x + 1); }
+        if (o & 2) { P(x0 - x, y0 - y, y + 1); P(x0 - y, y0 - x, x + 1); }
+        if (o & 4) { P(x0 - x, y0, y + 1); P(x0 - y, y0, x + 1); }
+        if (o & 8) { P(x0 + x, y0, y + 1); P(x0 + y, y0, x + 1); }
+      } else {
+        if (o & 1) { P(x0 + x, y0 - y); P(x0 + y, y0 - x); }
+        if (o & 2) { P(x0 - x, y0 - y); P(x0 - y, y0 - x); }
+        if (o & 4) { P(x0 - x, y0 + y); P(x0 - y, y0 + x); }
+        if (o & 8) { P(x0 + x, y0 + y); P(x0 + y, y0 + x); }
+      }
+    }
+    // o: 1 upper-right, 2 upper-left, 4 lower-left, 8 lower-right
+    arcs(x0, y0, r, o, disc) {
+      let f = 1 - r, ddx = 1, ddy = -2 * r, x = 0, y = r;
+      this.circleSection(x, y, x0, y0, o, disc);
+      while (x < y) {
+        if (f >= 0) { y--; ddy += 2; f += ddy; }
+        x++; ddx += 2; f += ddx;
+        this.circleSection(x, y, x0, y0, o, disc);
+      }
+    }
+    circle(x, y, r) { this.arcs(x, y, r, 15, false); }
+    disc(x, y, r) { this.arcs(x, y, r, 15, true); }
+    rframe(x, y, w, h, r) {
+      const xl = x + r, yu = y + r, xr = x + w - r - 1, yl = y + h - r - 1;
+      this.arcs(xl, yu, r, 2, false); this.arcs(xr, yu, r, 1, false);
+      this.arcs(xl, yl, r, 4, false); this.arcs(xr, yl, r, 8, false);
+      let ww = w - 2 * r, hh = h - 2 * r;
+      if (ww >= 3) { ww -= 2; this.hline(xl + 1, y, ww); this.hline(xl + 1, y + h - 1, ww); }
+      if (hh >= 3) { hh -= 2; this.vline(x, yu + 1, hh); this.vline(x + w - 1, yu + 1, hh); }
+    }
+    rbox(x, y, w, h, r) {
+      const xl = x + r, yu = y + r, xr = x + w - r - 1, yl = y + h - r - 1;
+      this.arcs(xl, yu, r, 2, true); this.arcs(xr, yu, r, 1, true);
+      this.arcs(xl, yl, r, 4, true); this.arcs(xr, yl, r, 8, true);
+      let ww = w - 2 * r, hh = h - 2 * r;
+      if (ww >= 3) { ww -= 2; this.box(xl + 1, y, ww, r + 1); this.box(xl + 1, yl, ww, r + 1); }
+      if (hh >= 3) { hh -= 2; this.box(x, yu + 1, w, hh); }
+    }
+    // text
+    setFont(name) { this.font = FONTS[name]; }
+    fontHeight() { return this.font.height; }
+    strWidth(s) {
+      let w = 0, dx = 0, last = null;
+      for (const ch of String(s)) {
+        const g = this.font.glyphs.get(ch.charCodeAt(0));
+        if (!g) continue;
+        dx = g.adv; w += dx; last = g;
+      }
+      if (last && last.w) w += last.w + last.xo - dx;
+      return w;
+    }
+    str(x, y, s) {
+      let pen = 0;
+      for (const ch of String(s)) {
+        const g = this.font.glyphs.get(ch.charCodeAt(0));
+        if (!g) continue;
+        if (g.w) {
+          const top = -(g.h + g.yo);
+          for (let r = 0; r < g.h; r++) for (let c = 0; c < g.w; c++) {
+            if (!g.bits[r * g.w + c]) continue;
+            const dx = pen + g.xo + c, dy = top + r;
+            if (this.vertical) this.pset(x + dy, y - dx); else this.pset(x + dx, y + dy);
+          }
+        }
+        pen += g.adv;
+      }
+    }
+    strAligned(x, y, ha, va, s) {
+      if (ha === 'right') x -= this.strWidth(s);
+      else if (ha === 'center') x -= Math.floor(this.strWidth(s) / 2);
+      if (va === 'top') y += this.font.ascent;
+      else if (va === 'center') y += Math.floor(this.font.ascent / 2);
+      this.str(x, y, s);
+    }
+    // bitmaps: solid by default (0 bits drawn in the inverse color), like the firmware's icons
+    icon(x, y, ic) {
+      if (!ic) return;
+      const fg = this.color, bg = fg === 1 ? 0 : fg === 0 ? 1 : -1;
+      for (let r = 0; r < ic.h; r++) for (let c = 0; c < ic.w; c++) {
+        if (ic.bits[r * ic.w + c]) { this.color = fg; this.pset(x + c, y + r); }
+        else if (!this.transparent && bg >= 0) { this.color = bg; this.pset(x + c, y + r); }
+      }
+      this.color = fg;
+    }
+  }
+
+  /* ---------- UI elements (layouts from the firmware's elements.c) ---------- */
+  const BTN = {
+    left: I(['...#', '..##', '.###', '####', '.###', '..##', '...#']),
+    right: I(['#...', '##..', '###.', '####', '###.', '##..', '#...']),
+    center: I(['..###..', '.#...#.', '#.....#', '#.....#', '#.....#', '.#...#.', '..###..']),
+    up: I(['...#...', '..###..', '.#####.', '#######']),
+    down: I(['#######', '.#####.', '..###..', '...#...']),
+  };
+  const el = {
+    scrollbarPos(c, x, y, h, pos, total) {
+      c.setColor(0); c.box(x - 3, y, 3, h); c.setColor(1);
+      for (let i = y; i < h + y; i += 2) c.dot(x - 2, i);
+      if (total) { const bh = h / total; c.box(x - 3, Math.floor(y + bh * pos), 3, Math.max(Math.floor(bh), 1)); }
+    },
+    scrollbar(c, pos, total) {
+      c.setColor(0); c.box(c.w - 3, 0, 3, c.h); c.setColor(1);
+      for (let i = 0; i < c.h; i += 2) c.dot(c.w - 2, i);
+      if (total) { const bh = c.h / total; c.box(c.w - 3, Math.floor(bh * pos), 3, Math.max(Math.floor(bh), 1)); }
+    },
+    frame(c, x, y, w, h) {
+      c.line(x + 2, y, x + w - 2, y);
+      c.line(x + 1, y + h - 1, x + w, y + h - 1);
+      c.line(x + 2, y + h, x + w - 1, y + h);
+      c.line(x, y + 2, x, y + h - 2);
+      c.line(x + w - 1, y + 1, x + w - 1, y + h - 2);
+      c.line(x + w, y + 2, x + w, y + h - 2);
+      c.dot(x + 1, y + 1);
+    },
+    buttonLeft(c, s) {
+      const bw = c.strWidth(s) + 6 + BTN.left.w + 3, y = c.h;
+      c.box(0, y - 12, bw, 12);
+      c.line(bw, y, bw, y - 12); c.line(bw + 1, y, bw + 1, y - 11); c.line(bw + 2, y, bw + 2, y - 10);
+      c.invert(); c.icon(3, y - (BTN.left.h + 3), BTN.left); c.str(3 + BTN.left.w + 3, y - 3, s); c.invert();
+    },
+    buttonRight(c, s) {
+      const bw = c.strWidth(s) + 6 + BTN.right.w + 3, x = c.w, y = c.h;
+      c.box(x - bw, y - 12, bw, 12);
+      c.line(x - bw - 1, y, x - bw - 1, y - 12); c.line(x - bw - 2, y, x - bw - 2, y - 11); c.line(x - bw - 3, y, x - bw - 3, y - 10);
+      c.invert(); c.str(x - bw + 3, y - 3, s); c.icon(x - 3 - BTN.right.w, y - (BTN.right.h + 3), BTN.right); c.invert();
+    },
+    buttonCenter(c, s) {
+      const bw = c.strWidth(s) + 2 + BTN.center.w + 3, x = Math.floor((c.w - bw) / 2), y = c.h;
+      c.box(x, y - 12, bw, 12);
+      c.line(x - 1, y, x - 1, y - 12); c.line(x - 2, y, x - 2, y - 11); c.line(x - 3, y, x - 3, y - 10);
+      c.line(x + bw, y, x + bw, y - 12); c.line(x + bw + 1, y, x + bw + 1, y - 11); c.line(x + bw + 2, y, x + bw + 2, y - 10);
+      c.invert(); c.icon(x + 1, y - (BTN.center.h + 3), BTN.center); c.str(x + 1 + BTN.center.w + 3, y - 3, s); c.invert();
+    },
+    multiline(c, x, y, text) {
+      const fh = c.fontHeight();
+      for (const line of String(text).split('\n')) { c.str(x, y, line); y += fh; if (y >= 64) break; }
+    },
+    multilineAligned(c, x, y, ha, va, text) {
+      const fh = c.fontHeight(), lines = String(text).split('\n');
+      if (va === 'bottom') y -= fh * (lines.length - 1);
+      else if (va === 'center') y -= Math.floor(fh * (lines.length - 1) / 2);
+      for (const line of lines) { c.strAligned(x, y, ha, va, line); y += fh; if (y > c.h) break; }
+    },
+    multilineFramed(c, x, y, text) {
+      const fh = c.fontHeight(), lines = String(text).split('\n');
+      const sw = Math.max(...lines.map(l => c.strWidth(l)));
+      c.setColor(0); c.box(x, y - fh, sw + 8, fh * lines.length + 4); c.setColor(1);
+      el.multiline(c, x + 4, y - 1, text);
+      el.frame(c, x, y - fh, sw + 8, fh * lines.length + 4);
+    },
+    boldRoundedFrame(c, x, y, w, h) {
+      c.setColor(0); c.box(x + 2, y + 2, w - 3, h - 3); c.setColor(1);
+      c.line(x + 3, y, x + w - 3, y); c.line(x + 2, y + 1, x + w - 2, y + 1);
+      c.line(x, y + 3, x, y + h - 3); c.line(x + 1, y + 2, x + 1, y + h - 2);
+      c.line(x + w, y + 3, x + w, y + h - 3); c.line(x + w - 1, y + 2, x + w - 1, y + h - 2);
+      c.line(x + 3, y + h, x + w - 3, y + h); c.line(x + 2, y + h - 1, x + w - 2, y + h - 1);
+      for (const [a, b] of [[2, 2], [3, 2], [2, 3]]) { c.dot(x + a, y + b); c.dot(x + w - a, y + b); c.dot(x + a, y + h - b); c.dot(x + w - a, y + h - b); }
+    },
+    bubble(c, x, y, w, h) {
+      c.rframe(x + 4, y, w, h, 3);
+      const yc = y + Math.floor(h * 2 / 3);
+      c.line(x, yc, x + 4, yc - 4); c.line(x, yc, x + 4, yc + 4);
+      c.setColor(0); c.line(x + 4, yc - 3, x + 4, yc + 3); c.setColor(1);
+    },
+    fit(c, s, w) {
+      s = String(s);
+      if (c.strWidth(s) <= w) return s;
+      w -= c.strWidth('...');
+      while (s.length && c.strWidth(s) > w) s = s.slice(0, -1);
+      return s + '...';
+    },
+    scrollLine(c, x, y, w, s, scroll, ellipsis) {
+      let line = String(s);
+      if (c.strWidth(line) > w) {
+        if (ellipsis) w -= c.strWidth('...');
+        let size = line.length, right = 0;
+        for (let i = line.length; i > 0; i--) {
+          const g = c.font.glyphs.get(line.charCodeAt(i) || 0);
+          right += g ? g.adv : 0;
+          if (right > w) break;
+          size--; if (!size) break;
+        }
+        if (size) { size += 3; line = line.slice(scroll % size); }
+        while (c.strWidth(line) > w) line = line.slice(0, -1);
+        if (ellipsis) line += '...';
+      }
+      c.str(x, y, line);
+    },
+    progress(c, x, y, w, p) {
+      c.setColor(0); c.box(x + 1, y + 1, w - 2, 7); c.setColor(1);
+      c.rframe(x, y, w, 9, 3);
+      c.box(x + 1, y + 1, Math.round(p * (w - 2)), 7);
+    },
+    // selected row of lists drawn with a 12px black bar whose corners are notched (file browser, receiver)
+    listFrame(c, y, scrollbar, x0 = 0) {
+      const right = scrollbar ? 122 : 127;
+      c.setColor(1); c.box(x0, y, right - x0, 12);
+      c.setColor(0);
+      c.dot(x0, y); c.dot(x0 + 1, y); c.dot(x0, y + 1); c.dot(x0, y + 11);
+      c.dot(right - 1, y); c.dot(right - 1, y + 11);
+    },
+  };
+
+
+  /* ---------- system: settings, timers, navigation, input, notifications ---------- */
+  const settings = {
+    contrast: 0, backlight: 1, offDelay: 30000, led: 1, volume: 1, vibro: true,
+    bt: true, clock: false, dummy: false, stealth: false, autoLock: 0, otg: false,
+  };
+  const device = { name: 'Zirku', battery: 87, bootAt: now() };
+  const hooks = {};
+  function on(name, fn) { (hooks[name] = hooks[name] || []).push(fn); }
+  function emit(name, data) { for (const fn of hooks[name] || []) { try { fn(data); } catch (err) { console.error(err); } } }
+
+  const timers = new Set();
+  function setTimer(owner, ms, fn, repeat = false) { const t = { owner, at: now() + ms, ms, fn, repeat }; timers.add(t); return t; }
+  function clearTimer(t) { if (t) timers.delete(t); }
+  function clearTimers(owner) { for (const t of [...timers]) if (t.owner === owner) timers.delete(t); }
+  function runTimers(t) {
+    for (const tm of [...timers]) {
+      if (!timers.has(tm) || t < tm.at) continue;
+      if (tm.repeat) tm.at = t - tm.at > tm.ms * 4 ? t + tm.ms : tm.at + tm.ms; else timers.delete(tm);
+      tm.fn(t);
+    }
+  }
+
+  const stack = [];
+  const top = () => stack[stack.length - 1];
+  function push(v) { stack.push(v); v.enter && v.enter(); changed(); return v; }
+  function pop() {
+    const v = stack.pop();
+    if (!v) return;
+    v.exit && v.exit(); clearTimers(v);
+    const t = top(); t && t.resume && t.resume();
+    changed();
+  }
+  function popTo(v) { while (stack.length > 1 && top() !== v) pop(); }
+  function replace(v) { const old = stack.pop(); if (old) { old.exit && old.exit(); clearTimers(old); } return push(v); }
+  function exitApp(app) { while (stack.length > 1 && top().app === app) pop(); }
+  function back(v) { if (v.onBack) v.onBack(); else if (stack.length > 1) pop(); }
+  function changed() { emit('screen', screenInfo()); }
+  function screenInfo() {
+    const v = top();
+    return { power: power.state, name: v ? v.name || '' : '', hint: v ? (typeof v.hint === 'function' ? v.hint() : v.hint || '') : '', part: v ? v.part || null : null, locked: desktopState.locked };
+  }
+
+  /* input: Press / Long (300 ms) / Repeat (every 150 ms) / Short / Release, as in the input service */
+  const KEY_BITS = { up: 1, down: 2, right: 4, left: 8, ok: 16, back: 32 };
+  const keys = {};
+  for (const k of Object.keys(KEY_BITS)) keys[k] = { down: false, counter: 0, timer: 0 };
+  function keyDown(k) {
+    const s = keys[k];
+    if (!s || s.down) return;
+    s.down = true; s.counter = 0;
+    s.timer = setInterval(() => {
+      s.counter++;
+      if (s.counter === 2) input(k, 'long');
+      else if (s.counter > 2) { s.counter--; input(k, 'repeat'); }
+    }, 150);
+    input(k, 'press');
+  }
+  function keyUp(k, cancel = false) {
+    const s = keys[k];
+    if (!s || !s.down) return;
+    clearInterval(s.timer); s.down = false;
+    if (!cancel && s.counter < 2) input(k, 'short');
+    s.counter = 0;
+    input(k, 'release');
+  }
+
+  let ongoing = 0, ongoingView = null, comboTimer = null, offHoldTimer = null;
+  function input(key, type) {
+    const e = { key, type };
+    if (power.state === 'off') {
+      if (key === 'back' && type === 'press') offHoldTimer = setTimeout(() => boot(), 2000);
+      if (key === 'back' && type === 'release') clearTimeout(offHoldTimer);
+      return;
+    }
+    // LEFT + BACK held for 5 s reboots the device
+    if (keys.left.down && keys.back.down) { if (!comboTimer) comboTimer = setTimeout(() => { comboTimer = null; reboot(); }, 5000); }
+    else if (comboTimer) { clearTimeout(comboTimer); comboTimer = null; }
+    if (power.state !== 'on') return;
+    backlightWake();
+    autoLockArm();
+    emit('key', e);
+    route(e);
+  }
+  function route(e) {
+    const bit = KEY_BITS[e.key];
+    if (e.type === 'release') ongoing &= ~bit;
+    else if (e.type === 'press') ongoing |= bit;
+    else if (!(ongoing & bit)) return;
+    const v = top();
+    if (!(ongoing & ~bit) && e.type === 'press') ongoingView = v;
+    if (v && v === ongoingView) {
+      const consumed = v.input ? v.input(e) : false;
+      if (!consumed && e.key === 'back' && (e.type === 'short' || e.type === 'long')) back(v);
+    } else if (ongoingView && e.type === 'release' && stack.includes(ongoingView)) {
+      ongoingView.input && ongoingView.input(e);
+    }
+  }
+
+  /* notification service: backlight timeout and RGB LED */
+  const bl = { on: true, until: now() + settings.offDelay, level: 1 };
+  function backlightWake() { bl.on = true; bl.until = now() + settings.offDelay; }
+  function backlightOff() { bl.on = false; }
+  const COLORS = { red: '#ff3b30', green: '#32e05a', blue: '#3a7bff', cyan: '#19e3ff', magenta: '#ff3fd2', yellow: '#ffd21f', white: '#ffffff' };
+  const led = { blink: null, flash: null, solid: null };
+  function ledEmit() {
+    const t = now();
+    let state = { mode: 'off' };
+    if (led.flash && t < led.flash.until) state = { mode: 'solid', color: led.flash.color };
+    else if (led.blink) state = { mode: 'blink', color: led.blink.color, period: led.blink.period };
+    else if (led.solid) state = { mode: 'solid', color: led.solid };
+    state.brightness = settings.led;
+    emit('led', state);
+  }
+  function ledBlinkStart(color, period = 100) { led.blink = { color: COLORS[color] || color, period }; ledEmit(); }
+  function ledBlinkColor(color) { if (led.blink) { led.blink.color = COLORS[color] || color; ledEmit(); } }
+  function ledBlinkStop() { led.blink = null; ledEmit(); }
+  function ledFlash(color, ms = 160) { led.flash = { color: COLORS[color] || color, until: now() + ms }; ledEmit(); setTimeout(ledEmit, ms + 10); }
+  function notifySuccess() { backlightWake(); ledFlash('green', 220); emit('vibro', 1); }
+  function notifyError() { backlightWake(); ledFlash('red', 220); emit('vibro', 2); }
+
+  /* auto-lock (Desktop settings) */
+  let autoLockTimer = null;
+  function autoLockArm() {
+    clearTimeout(autoLockTimer);
+    if (settings.autoLock && !desktopState.locked) autoLockTimer = setTimeout(() => { if (power.state === 'on' && !desktopState.locked) desktopLock(); }, settings.autoLock);
+  }
+
+  /* power */
+  const power = { state: 'on' };
+  function clearStack() { while (stack.length) { const v = stack.pop(); v.exit && v.exit(); clearTimers(v); } }
+  function powerOff() {
+    clearStack();
+    power.state = 'off';
+    led.blink = null; led.flash = null; ledEmit();
+    bl.on = false;
+    desktopState.locked = false;
+    changed();
+  }
+  function boot(delay = 900) {
+    clearStack();
+    power.state = 'boot';
+    bl.on = true; bl.until = now() + settings.offDelay;
+    desktopState.locked = false;
+    changed();
+    setTimeout(() => {
+      power.state = 'on';
+      device.bootAt = now();
+      push(DesktopMain());
+      backlightWake();
+    }, delay);
+  }
+  function reboot() { powerOff(); setTimeout(() => boot(), 500); }
+
+  /* ---------- status bar (layout of gui.c; artwork drawn here) ---------- */
+  const SB = {
+    sd: I(['########...', '#########..', '##.#.#.##..', '##.#.#.###.', '#########..', '#########..', '#########..', '#########..']),
+    bt: I(['..#..', '#.##.', '.##.#', '..##.', '..##.', '.##.#', '#.##.', '..#..']),
+    battery: I(['.######################...', '#......................#..', '#......................###', '#......................#.#', '#......................#.#', '#......................###', '#......................#..', '.######################...']),
+    lock: I(['..###..', '.#...#.', '.#...#.', '#######', '###.###', '###.###', '#######', '.#####.']),
+    muted: I(['...#....', '..##.#.#', '####..#.', '####.#.#', '####....', '..##....', '...#....', '........']),
+    game: I(['.#.....#...', '###...#.#..', '.#.....#...', '...........', '..#######..', '.#.......#.', '#.........#', '.#########.']),
+  };
+  function statusIcons() {
+    const left = [];
+    left.push({ w: 11, draw: (c, x) => c.icon(x, 2, SB.sd) });
+    if (settings.bt) left.push({ w: 5, draw: (c, x) => c.icon(x, 2, SB.bt) });
+    if (desktopState.locked && desktopState.lockIcon) left.push({ w: 7, draw: (c, x) => c.icon(x, 2, SB.lock) });
+    if (settings.dummy) left.push({ w: 11, draw: (c, x) => c.icon(x, 2, SB.game) });
+    if (settings.stealth) left.push({ w: 8, draw: (c, x) => c.icon(x, 2, SB.muted) });
+    const right = [{ w: 26, draw: (c, x) => { c.icon(x, 2, SB.battery); c.box(x + 2, 4, Math.floor((device.battery + 4) / 5), 4); } }];
+    if (settings.clock) {
+      const d = new Date();
+      const text = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+      const cw = (() => { canvas.setFont('primary'); const w = canvas.strWidth(text) - 1 + (d.getMinutes() % 10 === 1 ? 1 : 0); canvas.setFont('secondary'); return w; })();
+      right.push({ w: cw, draw: (cv, x) => { cv.setFont('primary'); cv.strAligned(x, 10, 'left', 'bottom', text); cv.setFont('secondary'); } });
+    }
+    return { left, right };
+  }
+  function drawStatusBar(cv) {
+    // background rail (original design)
+    cv.setColor(1);
+    cv.hline(0, 3, 128); cv.hline(0, 9, 128); cv.hline(1, 10, 126);
+    for (let x = 1; x < 127; x += 2) cv.dot(x, 6);
+    cv.setColor(0); cv.box(52, 1, 24, 8); cv.setColor(1);
+    cv.rframe(52, 1, 24, 8, 2);
+    for (let x = 56; x < 72; x += 4) cv.vline(x, 3, 4);
+    const { left, right } = statusIcons();
+    let x = 127, rightUsed = 0;
+    for (const ic of right) {
+      rightUsed += ic.w + 2; x -= ic.w + 2;
+      cv.setColor(0); cv.box(x - 1, 1, ic.w + 2, 10); cv.setColor(1);
+      ic.draw(cv, x);
+    }
+    if (rightUsed) {
+      const fx = 128 - 3 - rightUsed, fw = rightUsed + 3;
+      cv.rframe(fx, 0, fw, 13, 1); cv.line(fx + fw - 2, 1, fx + fw - 2, 11); cv.line(fx + 1, 11, fx + fw - 2, 11);
+    }
+    x = 2; let leftUsed = 0;
+    for (const ic of left) {
+      cv.setColor(0); cv.box(x - 1, 1, ic.w + 2, 10); cv.setColor(1);
+      ic.draw(cv, x);
+      leftUsed += ic.w + 2; x += ic.w + 2;
+    }
+    if (leftUsed) {
+      const fw = leftUsed + 3;
+      cv.rframe(0, 0, fw, 13, 1); cv.line(fw - 2, 1, fw - 2, 11); cv.line(1, 11, fw - 2, 11);
+    }
+  }
+
+  /* ---------- LCD output ---------- */
+  const canvas = new Canvas();
+  let ctx = null, img = null, lastFrame = 0;
+  const LCD = { litBg: [255, 135, 20], litFg: [44, 22, 4], darkBg: [128, 116, 92], darkFg: [32, 28, 22], offBg: [104, 96, 80] };
+  const mix = (a, b, k) => a.map((v, i) => Math.round(v + (b[i] - v) * k));
+  function render(t) {
+    canvas.reset(); canvas.clear();
+    if (power.state === 'on') {
+      const v = top();
+      if (v) {
+        if (v.vertical) canvas.setRot(3);
+        v.draw(canvas, t);
+        if (v.vertical) canvas.setRot(0);
+        if (v.layer === 'desktop') { canvas.reset(); drawStatusBar(canvas); }
+      }
+    }
+    // backlight level eases towards its target
+    const target = power.state === 'off' ? 0 : bl.on ? settings.backlight : 0;
+    bl.level += (target - bl.level) * Math.min(1, (t - lastFrame) / 90);
+    if (Math.abs(target - bl.level) < 0.01) bl.level = target;
+    let bg = mix(LCD.darkBg, LCD.litBg, bl.level), fg = mix(LCD.darkFg, LCD.litFg, bl.level);
+    if (power.state === 'off') bg = LCD.offBg;
+    const k = clamp(0.9 + settings.contrast * 0.012, 0.55, 1);
+    fg = mix(bg, fg, k);
+    if (settings.contrast > 0) bg = mix(bg, fg, settings.contrast * 0.012);
+    const d = img.data, fb = canvas.fb;
+    for (let i = 0; i < W * H; i++) {
+      const col = fb[i] && power.state !== 'off' ? fg : bg;
+      d[i * 4] = col[0]; d[i * 4 + 1] = col[1]; d[i * 4 + 2] = col[2]; d[i * 4 + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+  function frame(t) {
+    runTimers(t);
+    if (bl.on && t > bl.until) bl.on = false;
+    render(t);
+    lastFrame = t;
+    requestAnimationFrame(frame);
+  }
+
+
+  /* ---------- generic views (behaviour of gui/modules) ---------- */
+  const HINT = {
+    list: '↑↓ 選択　OK 決定　戻る 前の画面へ',
+    varlist: '↑↓ 選択　←→ 値を変更　OK 決定　戻る 前の画面へ',
+    back: '戻る 前の画面へ',
+  };
+  const isNav = e => e.type === 'short' || e.type === 'repeat';
+
+  // submenu.c — 4 rows (3 with a header), 16 px tall, wrap-around selection
+  function Submenu(o) {
+    const v = {
+      layer: 'fullscreen', name: o.name, hint: o.hint || HINT.list, part: o.part, app: o.app,
+      header: o.header || '', items: o.items, pos: 0, win: 0,
+      onScreen() { return this.header ? 3 : 4; },
+      draw(c) {
+        const ih = 16, iw = c.w - 5, yo = this.header ? 16 : 0;
+        if (this.header) { c.setFont('primary'); c.str(4, 11, this.header); }
+        c.setFont('secondary');
+        this.items.forEach((it, i) => {
+          const ip = i - this.win;
+          if (ip < 0 || ip >= this.onScreen()) return;
+          if (i === this.pos) { c.setColor(1); c.rbox(0, yo + ip * ih + 1, iw, ih - 2, 1); c.setColor(0); } else c.setColor(1);
+          c.str(6, yo + ip * ih + ih - 4, el.fit(c, typeof it.label === 'function' ? it.label() : it.label, iw - 12));
+        });
+        c.setColor(1);
+        el.scrollbar(c, this.pos, this.items.length);
+      },
+      up() {
+        const n = this.items.length, s = this.onScreen();
+        if (this.pos > 0) { this.pos--; if (this.pos === this.win && this.win > 0) this.win--; }
+        else { this.pos = n - 1; if (this.pos > s - 1) this.win = this.pos - (s - 1); }
+      },
+      down() {
+        const n = this.items.length, s = this.onScreen();
+        if (this.pos < n - 1) { this.pos++; if (this.pos - this.win > s - 2 && this.win < n - s) this.win++; }
+        else { this.pos = 0; this.win = 0; }
+      },
+      select(i) {
+        const n = this.items.length, s = this.onScreen();
+        this.pos = i < n ? i : 0;
+        this.win = Math.max(0, this.pos - 1);
+        if (n <= s) this.win = 0; else this.win = Math.min(this.win, n - s);
+      },
+      input(e) {
+        if (e.key === 'ok') {
+          const it = this.items[this.pos];
+          if (it) { if (it.ex) it.ex(e.type); else if (e.type === 'short' && it.action) it.action(); }
+          return true;
+        }
+        if (isNav(e) && e.key === 'up') { this.up(); return true; }
+        if (isNav(e) && e.key === 'down') { this.down(); return true; }
+        return false;
+      },
+    };
+    if (o.selected) v.select(o.selected);
+    return v;
+  }
+
+  // variable_item_list.c — label left, "< value >" centred at x=95
+  function VarList(o) {
+    const v = Submenu({ ...o, header: '' });
+    v.hint = o.hint || HINT.varlist;
+    v.draw = function (c) {
+      c.setFont('secondary');
+      this.items.forEach((it, i) => {
+        const ip = i - this.win;
+        if (ip < 0 || ip >= 4) return;
+        const y = ip * 16, ty = y + 12;
+        if (i === this.pos) { c.setColor(1); c.rbox(0, y + 1, 123, 14, 1); c.setColor(0); } else c.setColor(1);
+        c.str(6, ty, it.label);
+        const values = it.values || [];
+        if (values.length) {
+          if (it.index > 0) c.str(73, ty, '<');
+          c.strAligned(95, ty, 'center', 'bottom', it.text ? it.text() : values[it.index]);
+          if (it.index < values.length - 1) c.str(115, ty, '>');
+        }
+      });
+      c.setColor(1);
+      el.scrollbar(c, this.pos, this.items.length);
+    };
+    v.input = function (e) {
+      const it = this.items[this.pos];
+      if (e.type === 'short' && e.key === 'ok') { if (it && it.action) it.action(); return false; }
+      if (!isNav(e)) return false;
+      if (e.key === 'up') { this.up(); return true; }
+      if (e.key === 'down') { this.down(); return true; }
+      if ((e.key === 'left' || e.key === 'right') && it && it.values && it.values.length) {
+        const next = it.index + (e.key === 'left' ? -1 : 1);
+        if (next >= 0 && next < it.values.length && !it.locked) { it.index = next; it.change && it.change(next); }
+        return true;
+      }
+      return e.key === 'left' || e.key === 'right';
+    };
+    return v;
+  }
+
+  // label arrays are written in the firmware's [text, x, y, halign, valign] order
+  function drawLabel(c, spec) { const [text, x, y, ha, va] = spec; el.multilineAligned(c, x, y, ha, va, text); }
+
+  // popup.c — icon + bold header + text, any short key fires the callback when one is set
+  function Popup(o) {
+    return {
+      layer: 'fullscreen', name: o.name, hint: o.hint || HINT.back, part: o.part, app: o.app,
+      draw(c, t) {
+        if (o.icon) c.icon(o.icon[0], o.icon[1], typeof o.icon[2] === 'function' ? o.icon[2](t) : o.icon[2]);
+        if (o.header) { c.setFont('primary'); drawLabel(c, o.header); }
+        if (o.text) { c.setFont('secondary'); drawLabel(c, o.text); }
+        if (o.extra) { c.setFont('secondary'); o.extra(c, t); }
+      },
+      input(e) { if (e.type === 'short' && o.onKey) { o.onKey(e); return true; } return false; },
+      enter() { if (o.timeout) setTimer(this, o.timeout, () => o.onTimeout && o.onTimeout()); o.enter && o.enter(this); },
+      exit() { o.exit && o.exit(this); },
+    };
+  }
+
+  // dialog_ex.c — header/text/icon plus up to three soft buttons
+  function Dialog(o) {
+    return {
+      layer: 'fullscreen', name: o.name, hint: o.hint, part: o.part, app: o.app,
+      draw(c, t) {
+        if (o.icon) c.icon(o.icon[0], o.icon[1], o.icon[2]);
+        c.setFont('primary');
+        if (o.header) drawLabel(c, o.header);
+        c.setFont('secondary');
+        if (o.text) drawLabel(c, o.text);
+        if (o.extra) o.extra(c, t);
+        if (o.left) el.buttonLeft(c, o.left);
+        if (o.center) el.buttonCenter(c, o.center);
+        if (o.right) el.buttonRight(c, o.right);
+      },
+      input(e) {
+        if (e.type !== 'short') return false;
+        if (e.key === 'left' && o.left) { o.onResult('left'); return true; }
+        if (e.key === 'ok' && o.center) { o.onResult('center'); return true; }
+        if (e.key === 'right' && o.right) { o.onResult('right'); return true; }
+        return false;
+      },
+    };
+  }
+
+  // file_browser.c — 5 rows of 12 px, ". ." entry to go up, long names scroll when selected
+  const FILE_ICONS = {
+    folder: I(['..........', '.####.....', '#....#####', '#........#', '#........#', '#........#', '#........#', '#........#', '##########', '..........']),
+    back: I(['..........', '..#.......', '.##.......', '#########.', '.##......#', '..#......#', '.........#', '.........#', '..........', '..........']),
+    file: I(['.######...', '.#....##..', '.#....#.#.', '.#....####', '.#.......#', '.#.......#', '.#.......#', '.#.......#', '.#########', '..........']),
+    badusb: I(['..........', '.########.', '.#......#.', '.#.#..#.#.', '.#......#.', '.#.####.#.', '.#......#.', '.########.', '...#..#...', '...####...']),
+    sub: I(['..........', '#........#', '#.#....#.#', '#.#.##.#.#', '#.#.##.#.#', '#....#...#', '.....#....', '.....#....', '.....#....', '...#####..']),
+    nfc: I(['..........', '.#.....#..', '.##....#.#', '.#.#...#.#', '.#..#..#.#', '.#...#.#.#', '.#....##.#', '.#.....#..', '..........', '..........']),
+    rfid: I(['..........', '##########', '#........#', '#.##..##.#', '#.#.#.#..#', '#.##..#..#', '#.#.#.##.#', '#........#', '##########', '..........']),
+    ir: I(['..........', '...##.....', '..#..#....', '..#..#.#..', '..####..#.', '..####.#..', '..####..#.', '..####....', '..####....', '..........']),
+    ibutton: I(['..........', '...####...', '..#....#..', '.#..##..#.', '.#.#..#.#.', '.#.#..#.#.', '.#..##..#.', '..#....#..', '...####...', '..........']),
+    u2f: I(['..........', '...####...', '..#....#..', '..#....#..', '.########.', '.#..##..#.', '.#..##..#.', '.#......#.', '.########.', '..........']),
+    app: I(['..........', '.###..###.', '.#.#..#.#.', '.###..###.', '..........', '.###..###.', '.#.#..#.#.', '.###..###.', '..........', '..........']),
+    js: I(['..........', '.########.', '.#......#.', '.#...#..#.', '.#...#..#.', '.#.#.#..#.', '.#..#...#.', '.#......#.', '.########.', '..........']),
+  };
+  function FileBrowser(o) {
+    const v = {
+      layer: 'fullscreen', name: o.name, hint: o.hint || '↑↓ 選択　OK 開く　← 上のフォルダ　戻る 閉じる', part: o.part, app: o.app,
+      path: [o.root], idx: 0, offset: 0, scroll: 0, prev: [],
+      folder() { return this.path[this.path.length - 1]; },
+      isRoot() { return this.path.length === 1; },
+      entries() {
+        const list = (this.folder().children || []).filter(n => !n.hidden);
+        return this.isRoot() ? list : [{ name: '. .', type: 'back' }, ...list];
+      },
+      updateOffset() {
+        const n = this.entries().length, LIST = 5, bounds = n > LIST - 1 ? 2 : n;
+        if (n > LIST - 1 && this.idx >= n - 1) this.offset = this.idx - (LIST - 1);
+        else if (this.offset < this.idx - bounds) this.offset = clamp(this.idx - (LIST - 2), 0, n - bounds);
+        else if (this.offset > this.idx - bounds) this.offset = clamp(this.idx - 1, 0, n - bounds);
+      },
+      draw(c) {
+        const items = this.entries(), n = items.length, sb = n > 5;
+        c.setFont('secondary');
+        for (let i = 0; i < Math.min(n, 5); i++) {
+          const idx = clamp(i + this.offset, 0, n);
+          const it = items[idx];
+          if (!it) continue;
+          let sc = 0;
+          if (idx === this.idx) { el.listFrame(c, 3 + i * 12, sb); sc = Math.max(0, this.scroll - 2); c.setColor(0); } else c.setColor(1);
+          const icon = it.type === 'back' ? FILE_ICONS.back : it.type === 'folder' ? FILE_ICONS.folder : FILE_ICONS[it.icon] || o.fileIcon || FILE_ICONS.file;
+          c.icon(2, 3 + 1 + i * 12, icon);
+          const label = it.type === 'file' && o.hideExt !== false ? it.name.replace(/\.[^.]+$/, '') : it.name;
+          el.scrollLine(c, 15, 3 + 9 + i * 12, sb ? 104 : 110, label, sc, idx !== this.idx);
+          c.setColor(1);
+        }
+        if (sb) el.scrollbarPos(c, 126, 3, 61, this.idx, n);
+        if ((this.isRoot() ? n : n - 1) === 0) c.strAligned(64, 32, 'center', 'center', '<Empty>');
+      },
+      enter() { setTimer(this, 333, () => { this.scroll++; }, true); },
+      resume() { this.scroll = 0; },
+      go(node) { this.prev.push(this.idx); this.path.push(node); this.idx = 0; this.offset = 0; this.scroll = 0; changed(); },
+      up() { this.path.pop(); this.idx = this.prev.pop() || 0; this.offset = 0; this.updateOffset(); this.scroll = 0; changed(); },
+      input(e) {
+        const items = this.entries(), n = items.length;
+        if ((e.key === 'up' || e.key === 'down') && isNav(e)) {
+          if (!n) return true;
+          this.idx = (this.idx + (e.key === 'up' ? -1 : 1) + n) % n;
+          this.updateOffset(); this.scroll = 0;
+          return true;
+        }
+        if (e.key === 'ok' && e.type === 'short') {
+          const it = items[this.idx];
+          if (!it) return true;
+          if (it.type === 'back') this.up();
+          else if (it.type === 'folder') this.go(it);
+          else o.onFile && o.onFile(it, this);
+          return true;
+        }
+        if (e.key === 'left' && e.type === 'short') { if (!this.isRoot()) this.up(); return true; }
+        if (e.key === 'back' && e.type === 'short' && !this.isRoot()) { this.up(); return true; }
+        return false;
+      },
+    };
+    return v;
+  }
+
+  // text_input.c — header, input box and the 3-row keyboard drawn with the keyboard font
+  const KB_ROWS = [
+    [['q', 1, 8], ['w', 10, 8], ['e', 19, 8], ['r', 28, 8], ['t', 37, 8], ['y', 46, 8], ['u', 55, 8], ['i', 64, 8], ['o', 73, 8], ['p', 82, 8], ['0', 91, 8], ['1', 100, 8], ['2', 110, 8], ['3', 120, 8]],
+    [['a', 1, 20], ['s', 10, 20], ['d', 19, 20], ['f', 28, 20], ['g', 37, 20], ['h', 46, 20], ['j', 55, 20], ['k', 64, 20], ['l', 73, 20], ['\b', 82, 12], ['4', 100, 20], ['5', 110, 20], ['6', 120, 20]],
+    [['z', 1, 32], ['x', 10, 32], ['c', 19, 32], ['v', 28, 32], ['b', 37, 32], ['n', 46, 32], ['m', 55, 32], ['_', 64, 32], ['\r', 74, 23], ['7', 100, 32], ['8', 110, 32], ['9', 120, 32]],
+  ];
+  function TextInput(o) {
+    const v = {
+      layer: 'fullscreen', name: o.name || '名前の入力', part: o.part, app: o.app,
+      hint: '↑↓←→ 文字を選ぶ　OK 入力（長押しで大文字）　戻る長押し 1文字削除　save で決定',
+      text: o.text || '', clearDefault: !!o.text, row: 0, col: 0,
+      draw(c) {
+        c.setFont('secondary');
+        c.str(2, 8, o.header);
+        c.rframe(1, 12, 126, 15, 1);
+        let need = 120, start = 4, text = this.text;
+        if (c.strWidth(text) > need) { c.str(start, 22, '...'); start += 6; need -= 8; }
+        while (text && c.strWidth(text) > need) text = text.slice(1);
+        if (this.clearDefault) { c.rbox(start - 1, 14, c.strWidth(text) + 2, 10, 1); c.setColor(0); }
+        else { c.str(start + c.strWidth(text) + 1, 22, '|'); c.str(start + c.strWidth(text) + 2, 22, '|'); }
+        c.str(start, 22, text);
+        c.setColor(1);
+        c.setFont('keyboard');
+        KB_ROWS.forEach((row, r) => row.forEach(([ch, x, y], col) => {
+          const sel = r === this.row && col === this.col, X = 1 + x, Y = 29 + y;
+          if (ch === '\r') { drawKeySave(c, X, Y, sel); return; }
+          if (ch === '\b') { drawKeyBackspace(c, X, Y, sel); return; }
+          if (sel) { c.setColor(1); c.box(X - 1, Y - 8, 7, 10); c.setColor(0); } else c.setColor(1);
+          const upper = this.clearDefault || (!this.text.length && /[a-z]/.test(ch));
+          c.str(X, Y, upper ? ch.toUpperCase() : ch);
+          c.setColor(1);
+        }));
+      },
+      move(dr, dc) {
+        if (dr) {
+          const nr = clamp(this.row + dr, 0, 2);
+          if (nr !== this.row) {
+            const size = KB_ROWS[nr].length;
+            if (dr < 0 && this.col > size - 6) this.col++;
+            if (dr > 0 && this.col > size - 4) this.col--;
+            this.row = nr; this.col = clamp(this.col, 0, size - 1);
+          }
+        } else {
+          const size = KB_ROWS[this.row].length;
+          this.col = (this.col + dc + size) % size;
+        }
+      },
+      ok(shift) {
+        let ch = KB_ROWS[this.row][this.col][0];
+        let toggle = !this.text.length || this.clearDefault;
+        if (shift) toggle = !toggle;
+        if (toggle) ch = ch.toUpperCase();
+        if (ch === '\r') { if (this.text.length) o.onDone(this.text); }
+        else if (ch === '\b') this.backspace();
+        else { if (this.clearDefault) this.text = ''; if (this.text.length < (o.max || 21)) this.text += ch; }
+        this.clearDefault = false;
+      },
+      backspace() { if (this.clearDefault) this.text = ''; else this.text = this.text.slice(0, -1); this.clearDefault = false; },
+      input(e) {
+        const dirs = { up: [-1, 0], down: [1, 0], left: [0, -1], right: [0, 1] };
+        if (e.type === 'short') {
+          if (dirs[e.key]) { this.move(...dirs[e.key]); return true; }
+          if (e.key === 'ok') { this.ok(false); return true; }
+          return false;
+        }
+        if (e.type === 'long' || e.type === 'repeat') {
+          if (dirs[e.key]) { this.move(...dirs[e.key]); return true; }
+          if (e.key === 'ok' && e.type === 'long') { this.ok(true); return true; }
+          if (e.key === 'back') { this.backspace(); return true; }
+          return e.key === 'ok';
+        }
+        return false;
+      },
+    };
+    return v;
+  }
+  function drawKeySave(c, x, y, sel) {
+    c.setColor(1);
+    if (sel) c.rbox(x, y, 24, 11, 2); else c.rframe(x, y, 24, 11, 2);
+    if (sel) c.setColor(0);
+    c.setFont('secondary'); c.str(x + 3, y + 8, 'save'); c.setFont('keyboard');
+    c.setColor(1);
+  }
+  function drawKeyBackspace(c, x, y, sel) {
+    c.setColor(1);
+    if (sel) c.rbox(x, y, 16, 9, 2); else c.rframe(x, y, 16, 9, 2);
+    c.setColor(sel ? 0 : 1);
+    c.line(x + 4, y + 4, x + 11, y + 4); c.line(x + 4, y + 4, x + 6, y + 2); c.line(x + 4, y + 4, x + 6, y + 6);
+    c.setColor(1);
+  }
+
+  // text page with a scrollbar (text_box / widget text scroll), used for info screens
+  function TextPage(o) {
+    return {
+      layer: 'fullscreen', name: o.name, hint: o.hint || '↑↓ スクロール　戻る 前の画面へ', part: o.part, app: o.app, top: 0,
+      draw(c) {
+        c.setFont('secondary');
+        const lines = o.lines, visible = 5;
+        for (let i = 0; i < visible && i + this.top < lines.length; i++) c.str(0, 10 + i * 11, lines[i + this.top]);
+        if (lines.length > visible) el.scrollbarPos(c, 128, 0, 64, this.top, lines.length - visible + 1);
+        o.extra && o.extra(c);
+      },
+      input(e) {
+        if (!isNav(e) || (e.key !== 'up' && e.key !== 'down')) return false;
+        this.top = clamp(this.top + (e.key === 'up' ? -1 : 1), 0, Math.max(0, o.lines.length - 5));
+        return true;
+      },
+    };
+  }
+
+  // fallback for deep screens this virtual device does not simulate
+  function NotSimulated(app, what) {
+    return Dialog({
+      app, name: 'この先は未対応', hint: '戻る 前の画面へ',
+      header: ['Virtual device', 64, 4, 'center', 'top'],
+      text: [`${what}\nneeds real hardware.`, 64, 20, 'center', 'top'],
+      left: 'Back', onResult: () => pop(),
+    });
+  }
+
+
+  /* ---------- icons (original pixel art at the firmware's icon sizes) ---------- */
+  function frames(base, ...layers) {
+    // base: rows; each layer: list of [x, y] pixels added on top of the previous frame
+    const out = [];
+    let rows = base.map(r => r.split(''));
+    out.push(rowsBitmap(rows.map(r => r.join(''))));
+    for (const layer of layers) {
+      rows = rows.map(r => r.slice());
+      for (const [x, y] of layer) rows[y][x] = '#';
+      out.push(rowsBitmap(rows.map(r => r.join(''))));
+    }
+    return out;
+  }
+  const blank14 = Array(14).fill('..............');
+  const put = (rows, art, ox = 0, oy = 0) => rows.map((r, y) => {
+    const a = art[y - oy];
+    if (!a) return r;
+    return r.split('').map((ch, x) => (a[x - ox] === '#' ? '#' : ch)).join('');
+  });
+  const MENU_ICONS = {
+    subghz: frames(put(blank14, ['..##..', '.#..#.', '.#..#.', '..##..', '..##..', '..##..', '..##..', '..##..', '..##..', '.####.', '######'], 4, 2),
+      [[3, 2], [2, 3], [2, 4], [3, 5], [10, 2], [11, 3], [11, 4], [10, 5]],
+      [[1, 1], [0, 2], [0, 3], [0, 4], [0, 5], [1, 6], [12, 1], [13, 2], [13, 3], [13, 4], [13, 5], [12, 6]]),
+    rfid: frames(put(blank14, ['############', '#..........#', '#..........#', '#..........#', '#..........#', '#..........#', '#..........#', '#..........#', '#..........#', '#..........#', '############'], 1, 1),
+      [[3, 3], [4, 3], [5, 3], [6, 3], [7, 3], [8, 3], [9, 3], [10, 3], [3, 4], [3, 5], [3, 6], [3, 7], [3, 8], [3, 9], [10, 4], [10, 5], [10, 6], [10, 7], [10, 8], [10, 9], [4, 9], [5, 9], [6, 9], [7, 9], [8, 9], [9, 9]],
+      [[5, 5], [6, 5], [7, 5], [8, 5], [5, 6], [8, 6], [5, 7], [6, 7], [7, 7], [8, 7]]),
+    nfc: frames(put(blank14, ['#...#', '##..#', '#.#.#', '#.#.#', '#..##', '#...#', '#...#'], 1, 4),
+      [[8, 5], [9, 6], [9, 7], [9, 8], [8, 9]],
+      [[10, 3], [11, 4], [12, 5], [12, 6], [12, 7], [12, 8], [11, 9], [10, 10]]),
+    ir: frames(put(blank14, ['..#..', '.###.', '#...#', '#.#.#', '#...#', '#.#.#', '#...#', '#.#.#', '#...#', '#####'], 1, 3),
+      [[6, 3], [7, 4], [7, 5], [6, 6]],
+      [[8, 1], [9, 2], [10, 3], [10, 4], [10, 5], [9, 6], [8, 7]]),
+    gpio: frames(put(blank14, ['.#.#.#.#.#.', '.#.#.#.#.#.', '###########', '#.........#', '#.#.......#', '#.........#', '#.........#', '###########', '.#.#.#.#.#.', '.#.#.#.#.#.'], 1, 2),
+      [[3, 7], [4, 7], [5, 6], [6, 6], [7, 7], [8, 7], [9, 6]],
+      [[3, 6], [4, 6], [5, 7], [6, 7], [7, 6], [8, 6], [9, 7]]),
+    ibutton: frames(put(blank14, ['..#####..', '.#.....#.', '#..###..#', '#.#...#.#', '#.#...#.#', '#.#...#.#', '#..###..#', '.#.....#.', '..#####..', '....#....', '...###...', '....#....'], 2, 1),
+      [[6, 5], [7, 5], [8, 5], [6, 6], [7, 6], [8, 6], [6, 4], [7, 4], [8, 4]]),
+    badusb: frames(put(blank14, ['#........#', '##......##', '.#.####.#.', '.########.', '.#......#.', '.#.#..#.#.', '.#......#.', '.#.####.#.', '.#......#.', '.########.', '..#....#..', '..######..', '..#.##.#..', '..######..'], 2, 0),
+      [[5, 5], [8, 5], [6, 7], [7, 7]]),
+    u2f: frames(put(blank14, ['..####..', '.#....#.', '.#....#.', '.#....#.', '########', '#......#', '#..##..#', '#..##..#', '#...#..#', '#......#', '########'], 3, 1),
+      [[4, 1], [5, 1], [6, 1], [7, 1]]),
+    settings: [
+      rowsBitmap(put(blank14, ['.....##.....', '..#..##..#..', '.##########.', '..########..', '..##....##..', '####....####', '####....####', '..##....##..', '..########..', '.##########.', '..#..##..#..', '.....##.....'], 1, 1)),
+      rowsBitmap(put(blank14, ['.##......##.', '.###.##.###.', '..########..', '.##########.', '.###....###.', '..##....##..', '..##....##..', '.###....###.', '.##########.', '..########..', '.###.##.###.', '.##......##.'], 1, 1)),
+    ],
+    apps: frames(put(blank14, ['#####.#####', '#...#.#...#', '#...#.#...#', '#...#.#...#', '#####.#####', '...........', '#####.#####', '#...#.#...#', '#...#.#...#', '#...#.#...#', '#####.#####'], 1, 1),
+      [[2, 2], [3, 2], [4, 2], [2, 3], [3, 3], [4, 3], [2, 4], [3, 4], [4, 4]],
+      [[8, 2], [9, 2], [10, 2], [8, 3], [9, 3], [10, 3], [8, 4], [9, 4], [10, 4]],
+      [[8, 8], [9, 8], [10, 8], [8, 9], [9, 9], [10, 9], [8, 10], [9, 10], [10, 10]]),
+  };
+  const ICON = {
+    antenna: I(['....#....', '#...#...#', '.#.###.#.', '..#####..', '...###...', '....#....', '....#....', '....#....', '....#....', '....#....', '...###...']),
+    lock: SB.lock,
+    unlock: I(['..###..', '.#...#.', '.#.....', '#######', '###.###', '###.###', '#######', '.#####.']),
+    backArrow: I(['...#......', '..##......', '.#######..', '#########.', '.#######.#', '..##....#.', '...#...#..', '.....##...']),
+    spinner: [0, 1, 2, 3].map(k => {
+      const pts = [[3, 0], [4, 0], [6, 1], [7, 3], [7, 4], [6, 6], [4, 7], [3, 7], [1, 6], [0, 4], [0, 3], [1, 1]];
+      const rows = Array.from({ length: 8 }, () => Array(8).fill('.'));
+      pts.forEach(([x, y], i) => { if ((i - k * 3 + 12) % 12 < 9) rows[y][x] = '#'; });
+      return rowsBitmap(rows.map(r => r.join('')));
+    }),
+    smile: I(['......######......', '....##......##....', '...#..........#...', '..#............#..', '.#..##.....##...#.', '.#..##.....##...#.', '#................#', '#................#', '#................#', '#..#..........#..#', '#...#........#...#', '.#...##....##...#.', '.#.....####.....#.', '..#............#..', '...#..........#...', '....##......##....', '......######......', '..................']),
+    clock: I(['......######......', '....##......##....', '...#....#.....#...', '..#.....#......#..', '.#......#.......#.', '.#......#.......#.', '#.......#........#', '#.......#........#', '#.......######...#', '#................#', '#................#', '.#..............#.', '.#..............#.', '..#............#..', '...#..........#...', '....##......##....', '......######......', '..................']),
+    error: I(['......######......', '....##......##....', '...#..........#...', '..#..#......#..#..', '.#....#....#....#.', '.#.....#..#.....#.', '#.......##.......#', '#.......##.......#', '#......#..#......#', '#.....#....#.....#', '#....#......#....#', '.#..............#.', '.#..............#.', '..#............#..', '...#..........#...', '....##......##....', '......######......', '..................']),
+    percent: I(['.##.....##', '#..#...##.', '#..#..##..', '.##..##...', '....##....', '...##.....', '..##..##..', '.##..#..#.', '##...#..#.', '#.....##..', '..........', '..........', '..........', '..........']),
+    arrowUp: I(['......#.......', '.....###......', '....#####.....', '...#######....', '..#########...', '.###########..', '....#####.....', '....#####.....', '....#####.....', '....#####.....', '....#####.....', '....#####.....', '....#####.....', '....#####.....', '..............']),
+    arrowUpEmpty: I(['......#.......', '.....#.#......', '....#...#.....', '...#.....#....', '..#.......#...', '.####...####..', '....#...#.....', '....#...#.....', '....#...#.....', '....#...#.....', '....#...#.....', '....#...#.....', '....#...#.....', '....#####.....', '..............']),
+  };
+  const rot180 = ic => ({ w: ic.w, h: ic.h, bits: Uint8Array.from(ic.bits).reverse() });
+  function drawMenuIcon(c, x, y, frames_, animStart, t) {
+    const k = animStart == null ? frames_.length - 1 : Math.floor((t - animStart) / 250) % frames_.length;
+    c.icon(x, y, frames_[k]);
+  }
+
+  /* ---------- desktop (desktop_view_main + animation manager + lock) ---------- */
+  const desktopState = { locked: false, lockIcon: false, lockMode: null, door: -55, hintUntil: 0, unlockCount: 0, lastPress: 0, anim: 'swim', animStart: now() };
+  const DESK_HINT = 'OK メニュー　↑ ロックメニュー（長押しでロック）　↓ アーカイブ　← アプリ一覧　→ パスポート　戻る5秒長押し 電源オフ';
+  function DesktopMain() {
+    let poweroffTimer = null;
+    const v = {
+      layer: 'desktop', name: '待ち受け画面（デスクトップ）', part: 'screen',
+      hint() {
+        if (desktopState.locked) return desktopState.lockMode === 'unlocked' ? 'ロックを解除しました' : 'ロック中：戻るボタンを素早く3回押すと解除';
+        return settings.dummy ? 'ダミーモード：OK／↓／←／→ でパスポート、↑ ロックメニュー' : DESK_HINT;
+      },
+      draw(c, t) {
+        drawIdleAnimation(c, t);
+        drawLocked(c, t);
+      },
+      input(e) {
+        if (desktopState.locked) return lockedInput(e);
+        if (!settings.dummy) {
+          if (e.type === 'short') {
+            if (e.key === 'ok') openMainMenu();
+            else if (e.key === 'up') push(LockMenu());
+            else if (e.key === 'down') openArchive();
+            else if (e.key === 'left') openApps();
+            else if (e.key === 'right') openPassport();
+          } else if (e.type === 'long') {
+            if (e.key === 'up') desktopLock();
+            else if (e.key === 'down') push(DebugView());
+            else if (e.key === 'left' || e.key === 'right') openApps();
+          }
+        } else if (e.type === 'short') {
+          if (e.key === 'up') push(LockMenu());
+          else if (e.key !== 'back') openPassport();
+        }
+        if (e.key === 'back') {
+          if (e.type === 'press') { clearTimer(poweroffTimer); poweroffTimer = setTimer(v, 5000, () => openPowerOff()); }
+          else if (e.type === 'release') { clearTimer(poweroffTimer); poweroffTimer = null; }
+        }
+        return true;
+      },
+      resume() { clearTimer(poweroffTimer); poweroffTimer = null; },
+    };
+    return v;
+  }
+  function drawIdleAnimation(c, t) {
+    const el_ = t - desktopState.animStart;
+    if (desktopState.anim === 'sleep') {
+      c.icon(0, 13, ART['anim_sleep_' + (Math.floor(el_ / 700) % 2)]);
+      return;
+    }
+    const k = Math.floor(el_ / 330) % 4;
+    const blink = Math.floor(el_ / 330) % 23 === 22;
+    c.icon(0, 13, blink ? ART.anim_swim_blink : ART['anim_swim_' + k]);
+  }
+  setInterval(() => { // the animation manager picks a new idle animation from time to time
+    if (power.state === 'on' && top() && top().layer === 'desktop' && !desktopState.locked) {
+      desktopState.anim = desktopState.anim === 'swim' ? 'sleep' : 'swim';
+      desktopState.animStart = now();
+    }
+  }, 75000);
+
+  // desktop_view_locked.c — doors slide in, then "To unlock press: back x3"
+  let doorTimer = null;
+  function desktopLock() {
+    popTo(stack[0]);
+    desktopState.locked = true; desktopState.lockIcon = false; desktopState.lockMode = 'closing'; desktopState.door = -55;
+    desktopState.unlockCount = 0;
+    clearInterval(doorTimer);
+    doorTimer = setInterval(() => {
+      if (desktopState.door < 0) desktopState.door = Math.min(0, desktopState.door + 5);
+      else {
+        clearInterval(doorTimer);
+        desktopState.lockMode = 'locked'; desktopState.lockIcon = true;
+        backlightOff();
+        changed();
+      }
+    }, 1000 / 16);
+    changed();
+  }
+  function desktopUnlock() {
+    desktopState.locked = false; desktopState.lockIcon = false; desktopState.lockMode = 'unlocked'; desktopState.unlockCount = 0;
+    setTimeout(() => { if (desktopState.lockMode === 'unlocked') { desktopState.lockMode = null; changed(); } }, 2000);
+    autoLockArm();
+    changed();
+  }
+  function lockedInput(e) {
+    const t = now();
+    if (desktopState.lockMode === 'closing') return true;
+    if (t - desktopState.lastPress > 600) { desktopState.unlockCount = 0; }
+    desktopState.lastPress = t;
+    if (desktopState.lockMode === 'locked' || desktopState.lockMode === 'hint') {
+      desktopState.lockMode = 'hint'; desktopState.hintUntil = t + 1000;
+      clearTimeout(desktopState.hintTimer);
+      desktopState.hintTimer = setTimeout(() => {
+        if (desktopState.lockMode === 'hint') { desktopState.lockMode = 'locked'; backlightOff(); }
+      }, 1000);
+    }
+    if (e.key === 'back') {
+      if (e.type === 'short') {
+        desktopState.unlockCount++;
+        if (desktopState.unlockCount === 3) desktopUnlock();
+      }
+    } else desktopState.unlockCount = 0;
+    return true;
+  }
+  function drawLocked(c) {
+    const m = desktopState.lockMode;
+    if (m === 'closing') {
+      const off = desktopState.door;
+      c.icon(0 + off, 64 - 55, ART.door_L);
+      c.icon(60 - off, 64 - 55, ART.door_R);
+      c.setFont('primary');
+      el.multilineFramed(c, 42, 30 + 13, 'Locked');
+    } else if (m === 'hint') {
+      c.setFont('secondary');
+      el.boldRoundedFrame(c, 14, 2 + 13, 99, 48);
+      el.multiline(c, 65, 20 + 13, 'To unlock\npress:');
+      c.icon(65, 36 + 13, ICON.backArrow); c.icon(80, 36 + 13, ICON.backArrow); c.icon(95, 36 + 13, ICON.backArrow);
+      c.icon(16, 7 + 13, ART.warning_dolphin);
+      c.dot(17, 61);
+    } else if (m === 'unlocked') {
+      c.setFont('primary');
+      el.multilineFramed(c, 42, 30 + 13, 'Unlocked');
+    }
+  }
+
+  // desktop_view_lock_menu.c
+  function LockMenu() {
+    return {
+      layer: 'desktop', name: 'ロックメニュー', hint: '↑↓ 選択　OK 決定　戻る 待ち受けへ', part: 'dpad', idx: 0,
+      draw(c) {
+        c.icon(-57, 13, ART.door_L); c.icon(116, 13, ART.door_R);
+        c.setFont('secondary');
+        const labels = ['Lock', settings.stealth ? 'Unmute' : 'Mute', settings.dummy ? 'Default Mode' : 'Dummy Mode'];
+        labels.forEach((s, i) => {
+          c.strAligned(64, 9 + i * 17 + 13, 'center', 'center', s);
+          if (this.idx === i) el.frame(c, 15, 1 + i * 17 + 13, 98, 15);
+        });
+      },
+      input(e) {
+        if (isNav(e) && (e.key === 'up' || e.key === 'down')) { this.idx = (this.idx + (e.key === 'up' ? 2 : 1)) % 3; return true; }
+        if (e.key === 'ok') {
+          if (e.type === 'short') {
+            if (this.idx === 0) desktopLock();
+            else if (this.idx === 1) { settings.stealth = !settings.stealth; pop(); }
+            else { settings.dummy = !settings.dummy; pop(); }
+          }
+          return true;
+        }
+        return false;
+      },
+    };
+  }
+
+  // desktop_view_debug.c (DOWN held on the desktop)
+  function DebugView() {
+    return {
+      layer: 'desktop', name: 'デバッグ情報（↓長押し）', hint: '戻る 待ち受けへ',
+      draw(c) {
+        const up = Math.floor((now() - device.bootAt) / 1000);
+        c.setFont('primary');
+        c.strAligned(64, 1 + 13, 'center', 'top', `Uptime: ${Math.floor(up / 3600)}h${Math.floor(up / 60) % 60}m${up % 60}s`);
+        c.setFont('secondary');
+        c.str(0, 19 + 13, `12.F7B9C4 R00:00 ${device.name}`);
+        c.str(0, 30 + 13, 'virtual [26-10-2026]');
+        c.str(0, 40 + 13, '0000000 [86.0] Virtual');
+        c.str(0, 50 + 13, '[7] browser');
+      },
+      input(e) { if (e.key === 'back' && e.type === 'short') pop(); return true; },
+    };
+  }
+
+  // dolphin_passport/passport.c
+  function openPassport() {
+    push({
+      layer: 'fullscreen', name: 'パスポート（イルカのステータス）', hint: '戻る 待ち受けへ',
+      draw(c) {
+        c.setFont('secondary');
+        c.vline(0, 0, 47); c.vline(3, 3, 44); c.line(0, 0, 3, 3);
+        c.line(6, 0, 125, 0); c.line(127, 2, 127, 47); c.dot(126, 1);
+        c.hline(0, 47, 128); c.hline(0, 52, 128); c.line(0, 47, 0, 63);
+        c.box(6, 48, 118, 4);
+        c.icon(9, 5, ART.portrait_happy);
+        c.line(58, 16, 123, 16); c.line(58, 30, 123, 30); c.line(58, 44, 123, 44);
+        c.str(58, 12, device.name); c.str(58, 26, 'Mood: Happy'); c.str(58, 40, 'Level: 1');
+        const xp = 64 - 9;
+        c.setColor(0); c.box(123 - xp, 48, xp + 1, 4); c.setColor(1);
+        c.line(123, 47, 123, 52);
+        c.str(4, 61, 'XP 9/300');
+      },
+      input(e) { if (e.type === 'short' && e.key === 'back') pop(); return true; },
+    });
+  }
+
+  /* ---------- main menu (loader_menu + menu.c) ---------- */
+  const mainMenuApp = { id: 'menu' };
+  function openMainMenu() {
+    const items = [
+      { label: 'Sub-GHz', icon: MENU_ICONS.subghz, open: () => SubGhzApp() },
+      { label: '125 kHz RFID', icon: MENU_ICONS.rfid, open: () => RfidApp() },
+      { label: 'NFC', icon: MENU_ICONS.nfc, open: () => NfcApp() },
+      { label: 'Infrared', icon: MENU_ICONS.ir, open: () => InfraredApp() },
+      { label: 'GPIO', icon: MENU_ICONS.gpio, open: () => GpioApp() },
+      { label: 'iButton', icon: MENU_ICONS.ibutton, open: () => IButtonApp() },
+      { label: 'Bad USB', icon: MENU_ICONS.badusb, open: () => BadUsbApp() },
+      { label: 'U2F', icon: MENU_ICONS.u2f, open: () => U2fApp() },
+      { label: 'Settings', icon: MENU_ICONS.settings, open: () => push(SettingsMenu()) },
+      { label: 'Apps', icon: MENU_ICONS.apps, open: () => openApps() },
+    ];
+    push({
+      layer: 'fullscreen', app: mainMenuApp, name: 'メインメニュー', hint: '↑↓ 選択　OK 開く　戻る 待ち受けへ', pos: 0, selAt: now(),
+      draw(c, t) {
+        const n = items.length, at = k => items[(k + this.pos + n - 1) % n];
+        c.setFont('secondary'); let it = at(0); drawMenuIcon(c, 4, 3, it.icon, null, t); c.str(22, 14, it.label);
+        c.setFont('primary'); it = at(1); drawMenuIcon(c, 4, 25, it.icon, this.selAt, t); c.str(22, 36, it.label);
+        c.setFont('secondary'); it = at(2); drawMenuIcon(c, 4, 47, it.icon, null, t); c.str(22, 58, it.label);
+        el.frame(c, 0, 21, 128 - 5, 21);
+        el.scrollbar(c, this.pos, n);
+      },
+      input(e) {
+        if (isNav(e) && (e.key === 'up' || e.key === 'down')) {
+          this.pos = (this.pos + (e.key === 'up' ? items.length - 1 : 1)) % items.length; this.selAt = now(); changed(); return true;
+        }
+        if (e.type === 'short' && e.key === 'ok') { items[this.pos].open(); return true; }
+        return false;
+      },
+      resume() { this.selAt = now(); },
+      part: null,
+    });
+  }
+  function SettingsMenu() {
+    const apps = [
+      ['Bluetooth', BluetoothSettings], ['LCD and Notifications', NotificationSettings], ['Storage', StorageSettings],
+      ['Power', () => PowerSettings()], ['Desktop', DesktopSettings], ['Passport', () => openPassport()], ['System', SystemSettings],
+      ['Expansion Modules', ExpansionSettings], ['Clock & Alarm', ClockSettings], ['About', AboutApp],
+    ];
+    return Submenu({ app: mainMenuApp, name: '設定（Settings）', items: apps.map(([label, fn]) => ({ label, action: fn })) });
+  }
+
+  /* ---------- power settings (Settings > Power, and BACK held on the desktop) ---------- */
+  function PowerOffDialog(app, onCancel) {
+    return Dialog({
+      app, name: '電源オフの確認', hint: '← Cancel 取り消し　→ Power Off 電源を切る', part: 'back',
+      icon: [14, 10, ART.dolph_cry],
+      header: ['Turn Off Device?', 64, 0, 'center', 'top'],
+      text: ['   I will be\nwaiting for\n you here...', 78, 14, 'left', 'top'],
+      left: 'Cancel', right: 'Power Off',
+      onResult: r => { if (r === 'left') onCancel(); else powerOff(); },
+    });
+  }
+  function openPowerOff() {
+    const app = { id: 'power-off' };
+    push(PowerOffDialog(app, () => exitApp(app)));
+  }
+  function PowerSettings() {
+    const app = { id: 'power' };
+    push(Submenu({
+      app, name: '電源設定（Power）', items: [
+        { label: 'Battery Info', action: () => push(BatteryInfo(app)) },
+        { label: 'Reboot', action: () => push(Submenu({
+          app, name: '再起動の種類', header: 'Reboot Type', items: [
+            { label: 'Firmware Upgrade', action: () => push(RebootConfirm(app, true)) },
+            { label: 'Reboot Flipper', action: () => push(RebootConfirm(app, false)) },
+          ],
+        })) },
+        { label: 'Power OFF', action: () => push(PowerOffDialog(app, () => pop())) },
+      ],
+    }));
+  }
+  function RebootConfirm(app, dfu) {
+    return Dialog({
+      app, name: dfu ? 'DFUモードで再起動' : '再起動の確認', hint: '← Cancel 取り消し　→ Reboot 再起動',
+      header: [dfu ? 'Reboot to DFU Mode?' : 'Reboot Flipper?', 64, 0, 'center', 'top'],
+      text: [dfu ? 'Needed for device maintenance\nor firmware upgrades' : 'May help with some firmware\n issues', 64, 14, 'center', 'top'],
+      left: 'Cancel', right: 'Reboot',
+      onResult: r => { if (r === 'left') pop(); else if (dfu) push(NotSimulated(app, 'DFU mode')); else reboot(); },
+    });
+  }
+  function BatteryInfo(app) {
+    const stat = (c, x, y, icon, val) => {
+      c.rect(x - 7, y + 7, 30, 13);
+      c.icon(x, y, icon);
+      c.setColor(0); c.box(x - 4, y + 16, 24, 6); c.setColor(1);
+      c.strAligned(x + 8, y + 22, 'center', 'bottom', val);
+    };
+    const ic = {
+      bat: I(['................', '......####......', '.....######.....', '....#......#....', '....#......#....', '....#......#....', '....#..##..#....', '....#.####.#....', '....#..##..#....', '....#......#....', '....#..##..#....', '....#......#....', '....########....', '................', '................', '................']),
+      temp: I(['................', '.......##.......', '......#..#......', '......#..#......', '......#..#.##...', '......#..#......', '......####.##...', '......####......', '.....######.....', '....###..###....', '....###..###....', '.....######.....', '......####......', '................', '................', '................']),
+      volt: I(['................', '.........##.....', '........##......', '.......##.......', '......##........', '.....##.........', '....#######.....', '........##......', '.......##.......', '......##........', '.....##.........', '....##..........', '................', '................', '................', '................']),
+      health: I(['................', '................', '...###...###....', '..#####.#####...', '.#############..', '.#############..', '.#############..', '..###########...', '...#########....', '....#######.....', '.....#####......', '......###.......', '.......#........', '................', '................', '................']),
+    };
+    return {
+      layer: 'fullscreen', app, name: 'バッテリー情報', hint: '戻る 前の画面へ', part: 'battery',
+      draw(c) {
+        c.icon(0, 5, ART.battery_body);
+        el.bubble(c, 53, 0, 71, 39);
+        c.setFont('primary'); c.strAligned(92, 9, 'center', 'center', 'Om-nom-nom!');
+        c.setFont('secondary'); c.strAligned(92, 20, 'center', 'center', 'Consumption is');
+        c.setFont('primary'); c.strAligned(92, 30, 'center', 'center', '24 mA');
+        c.setFont('secondary');
+        stat(c, 8, 42, ic.bat, `${device.battery}%`); stat(c, 40, 42, ic.temp, '27 C'); stat(c, 72, 42, ic.volt, '4.0 V'); stat(c, 104, 42, ic.health, '100%');
+      },
+      input() { return false; },
+    };
+  }
+
+  /* ---------- archive (DOWN on the desktop) ---------- */
+  const TABS = [
+    ['Favorites', null], ['iButton', 'ibutton'], ['NFC', 'nfc'], ['Sub-GHz', 'subghz'], ['RFID LF', 'lfrfid'],
+    ['Infrared', 'infrared'], ['Bad USB', 'badusb'], ['U2F', 'u2f'], ['Apps', 'apps'], ['Browser', ''],
+  ];
+  const TAB_ICON = { ibutton: 'ibutton', nfc: 'nfc', subghz: 'sub', lfrfid: 'rfid', infrared: 'ir', badusb: 'badusb', u2f: 'u2f' };
+  const favorites = [];
+  function openArchive() {
+    const app = { id: 'archive' };
+    const v = {
+      layer: 'fullscreen', app, name: 'アーカイブ（保存データ一覧）', part: null,
+      hint: '←→ タブ切替　↑↓ 選択　OK メニュー　戻る 待ち受けへ',
+      tab: 0, idx: 0, offset: 0, scroll: 0, menu: false, menuIdx: 0, path: [], dir: 'right',
+      tabFolder() { const p = TABS[this.tab][1]; return p === null ? null : p === '' ? FS : fsGet(p); },
+      files() {
+        if (this.tab === 0) return favorites.slice();
+        let f = this.tabFolder();
+        for (const p of this.path) f = p;
+        if (!f) return [];
+        const kids = (f.children || []).filter(n => !n.hidden);
+        if (this.tab === 9) return kids;
+        if (this.tab === 8) return kids.filter(n => n.type === 'folder' || /\.(fap|js)$/.test(n.name));
+        return kids;
+      },
+      typeIcon(n) { if (n.type === 'folder') return FILE_ICONS.folder; const tf = n.kind || TAB_ICON[TABS[this.tab][1]]; return FILE_ICONS[tf] || (/\.fap$/.test(n.name) ? FILE_ICONS.app : /\.js$/.test(n.name) ? FILE_ICONS.js : FILE_ICONS.file); },
+      switchTab(dir) {
+        for (let i = 0; i < TABS.length; i++) {
+          this.tab = (this.tab + (dir === 'left' ? TABS.length - 1 : 1)) % TABS.length;
+          this.path = []; this.idx = 0; this.offset = 0; this.scroll = 0;
+          if (this.tab === 9 || this.files().length) break;
+        }
+        this.dir = dir; changed();
+      },
+      enter() {
+        setTimer(this, 333, () => { this.scroll++; }, true);
+        if (!this.files().length) { this.tab = (this.tab + TABS.length - 1) % TABS.length; this.switchTab('right'); }
+      },
+      updateOffset() {
+        const n = this.files().length, items = 4, bounds = n > items - 1 ? 2 : n;
+        if (n > items - 1 && this.idx >= n - 1) this.offset = this.idx - (items - 1);
+        else if (this.offset < this.idx - bounds) this.offset = clamp(this.idx - (items - 2), 0, n - bounds);
+        else if (this.offset > this.idx - bounds) this.offset = clamp(this.idx - 1, 0, n - bounds);
+      },
+      draw(c) {
+        // tab bar
+        c.setColor(0); c.box(0, 0, 50, 13); c.box(107, 0, 20, 13); c.setColor(1);
+        c.hline(51, 3, 56); c.hline(51, 9, 56); c.hline(51, 10, 56);
+        for (let x = 52; x < 106; x += 2) c.dot(x, 6);
+        c.rframe(0, 0, 51, 13, 1); c.line(49, 1, 49, 11); c.line(1, 11, 49, 11);
+        c.strAligned(25, 9, 'center', 'bottom', TABS[this.tab][0]);
+        c.rframe(107, 0, 21, 13, 1); c.line(126, 1, 126, 11); c.line(108, 11, 126, 11);
+        c.icon(111, 2, BTN.left); c.icon(119, 2, BTN.right);
+        c.setColor(0); c.dot(50, 0); c.dot(127, 0); c.setColor(1);
+        const files = this.files(), n = files.length;
+        if (!n) { c.strAligned(64, 40, 'center', 'center', 'Empty'); return; }
+        const sb = n > 4;
+        for (let i = 0; i < Math.min(n, 4); i++) {
+          const idx = clamp(i + this.offset, 0, n);
+          const f = files[idx];
+          if (!f) continue;
+          let sc = 0;
+          if (idx === this.idx) { el.listFrame(c, 15 + i * 12, sb); sc = Math.max(0, this.scroll - 2); c.setColor(0); } else c.setColor(1);
+          c.icon(2, 16 + i * 12, this.typeIcon(f));
+          const known = this.tab !== 9 && f.type !== 'folder';
+          el.scrollLine(c, 15, 24 + i * 12, sb ? 104 : 110, known ? f.name.replace(/\.[^.]+$/, '') : f.name, sc, idx !== this.idx);
+          c.setColor(1);
+        }
+        if (sb) el.scrollbarPos(c, 126, 15, 49, this.idx, n);
+        if (this.menu) {
+          const f = files[this.idx];
+          c.setColor(0); c.box(71, 17, 57, 46); c.setColor(1);
+          c.rframe(70, 16, 58, 48, 1);
+          const fav = this.tab === 0 || favorites.includes(f);
+          const labels = ['Run in app', fav ? 'Unpin' : 'Pin', this.tab === 0 ? 'Move' : 'Rename', this.tab === 0 ? '---' : 'Delete'];
+          labels.forEach((s, i) => c.str(82, 27 + i * 11, s));
+          c.icon(74, 20 + this.menuIdx * 11, BTN.right);
+        }
+      },
+      input(e) {
+        const files = this.files(), n = files.length;
+        if (this.menu) {
+          if (e.type === 'short') {
+            if (e.key === 'up' || e.key === 'down') this.menuIdx = (this.menuIdx + (e.key === 'up' ? 3 : 1)) % 4;
+            else if (e.key === 'ok') this.menuAction(files[this.idx]);
+            else if (e.key === 'back') this.menu = false;
+          }
+          return true;
+        }
+        if (e.type === 'short') {
+          if (e.key === 'left' || e.key === 'right') this.switchTab(e.key);
+          else if (e.key === 'back') {
+            if (this.path.length) { this.path.pop(); this.idx = 0; this.offset = 0; } else exitApp(app);
+          }
+        }
+        if ((e.key === 'up' || e.key === 'down') && isNav(e) && n) {
+          this.idx = (this.idx + (e.key === 'up' ? n - 1 : 1)) % n; this.scroll = 0; this.updateOffset();
+        }
+        if (e.key === 'ok' && n) {
+          const f = files[this.idx];
+          if (e.type === 'short') {
+            if (this.tab === 0) runFile(f);
+            else if (f.type === 'folder') { this.path.push(f); this.idx = 0; this.offset = 0; }
+            else { this.menu = true; this.menuIdx = 0; }
+          } else if (e.type === 'long' && (f.type === 'folder' || this.tab === 0)) { this.menu = true; this.menuIdx = 0; }
+        }
+        return true;
+      },
+      menuAction(f) {
+        const label = this.menuIdx;
+        this.menu = false;
+        if (label === 0) runFile(f);
+        else if (label === 1) {
+          const i = favorites.indexOf(f);
+          if (i >= 0) favorites.splice(i, 1); else favorites.push(f);
+          if (this.tab === 0 && !favorites.length) this.switchTab('right');
+          this.idx = Math.min(this.idx, Math.max(0, this.files().length - 1));
+        } else if (label === 2 && this.tab !== 0) {
+          push(TextInput({ app, name: 'ファイル名の変更', header: 'Rename:', text: f.name.replace(/\.[^.]+$/, ''), onDone: s => { const ext = (f.name.match(/\.[^.]+$/) || [''])[0]; f.name = s + ext; pop(); } }));
+        } else if (label === 3 && this.tab !== 0) {
+          push(Dialog({
+            app, name: '削除の確認', hint: '← Cancel 取り消し　→ Delete 削除',
+            header: [`Delete\n${f.name.replace(/\.[^.]+$/, '')}?`, 64, 13, 'center', 'top'],
+            left: 'Cancel', right: 'Delete',
+            onResult: r => {
+              if (r === 'right') { fsRemove(f); const fi = favorites.indexOf(f); if (fi >= 0) favorites.splice(fi, 1); this.idx = 0; this.offset = 0; }
+              pop();
+            },
+          }));
+        }
+      },
+    };
+    push(v);
+  }
+  function runFile(f) {
+    if (/\.txt$/.test(f.name) && f.parent === fsGet('badusb')) BadUsbApp(f);
+    else if (f.app) f.app();
+    else if (f.kind === 'sub') SubGhzApp();
+    else if (f.kind === 'nfc') NfcApp();
+    else if (f.kind === 'rfid') RfidApp();
+    else if (f.kind === 'ir') InfraredApp();
+    else if (f.kind === 'ibutton') IButtonApp();
+    else push(NotSimulated({ id: 'run' }, 'This file'));
+  }
+
+  /* ---------- virtual SD card ---------- */
+  function folder(name, children = [], extra = {}) { const n = { name, type: 'folder', children, ...extra }; children.forEach(ch => { ch.parent = n; }); return n; }
+  function file(name, extra = {}) { return { name, type: 'file', ...extra }; }
+  const FS = folder('ext', [
+    folder('apps', [
+      folder('Bluetooth', [file('Remote.fap', { app: () => push(NotSimulated({ id: 'remote' }, 'Bluetooth Remote')) })]),
+      folder('Games', [file('Snake Game.fap', { app: () => SnakeGame() })]),
+      folder('GPIO', [file('GPIO.fap', { app: () => GpioApp() })]),
+      folder('iButton', [file('iButton.fap', { app: () => IButtonApp() })]),
+      folder('Infrared', [file('Infrared.fap', { app: () => InfraredApp() })]),
+      folder('NFC', [file('NFC.fap', { app: () => NfcApp() })]),
+      folder('RFID', [file('125 kHz RFID.fap', { app: () => RfidApp() })]),
+      folder('Scripts', ['badusb_demo.js', 'console.js', 'delay.js', 'gpio.js', 'gui.js', 'math.js', 'notify.js', 'storage.js'].map(n => file(n))),
+      folder('Sub-GHz', [file('Sub-GHz.fap', { app: () => SubGhzApp() })]),
+      folder('USB', [file('Bad USB.fap', { app: () => BadUsbApp() }), file('Remote.fap', { app: () => push(NotSimulated({ id: 'remote' }, 'USB Remote')) }), file('U2F.fap', { app: () => U2fApp() })]),
+    ]),
+    folder('apps_data', []),
+    folder('badusb', [folder('assets', [], { hidden: true }), ...['demo_chromeos.txt', 'demo_gnome.txt', 'demo_macos.txt', 'demo_windows.txt', 'Install_qFlipper_gnome.txt', 'Install_qFlipper_macOS.txt', 'Install_qFlipper_windows.txt', 'test_mouse.txt'].map(n => file(n, { kind: 'badusb' }))]),
+    folder('dolphin', []),
+    folder('ibutton', []),
+    folder('infrared', [folder('assets', [], { hidden: true })]),
+    folder('lfrfid', []),
+    folder('nfc', [folder('assets', [], { hidden: true })]),
+    folder('subghz', [folder('assets', [], { hidden: true })]),
+    folder('u2f', [folder('assets', [], { hidden: true })]),
+    folder('update', []),
+  ]);
+  function fsGet(path) { let n = FS; for (const p of path.split('/').filter(Boolean)) { n = (n.children || []).find(ch => ch.name === p); if (!n) return null; } return n; }
+  function fsAdd(path, node) { const f = fsGet(path); node.parent = f; f.children.push(node); f.children.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'folder' ? -1 : 1)); return node; }
+  function fsRemove(node) { const p = node.parent; if (p) p.children = p.children.filter(n => n !== node); }
+
+  /* ---------- Apps (LEFT on the desktop): file browser over /ext/apps ---------- */
+  function openApps() {
+    const app = { id: 'apps' };
+    push(FileBrowser({
+      app, name: 'アプリ一覧（Apps）', root: fsGet('apps'),
+      onFile: f => { if (f.app) f.app(); else push(NotSimulated(app, 'JavaScript apps')); },
+    }));
+    top().drawIcon = true;
+  }
+
+  /* ---------- Snake Game (applications/system/snake_game) ---------- */
+  function SnakeGame() {
+    const app = { id: 'snake' };
+    const st = { pts: [], dir: 'right', next: 'right', fruit: null, over: false, len: 7 };
+    function init() {
+      st.pts = []; for (let i = 0; i < 7; i++) st.pts.push({ x: 8 - i, y: 6 });
+      st.dir = st.next = 'right'; st.over = false; st.len = 7; placeFruit();
+    }
+    function placeFruit() {
+      for (;;) {
+        const f = { x: Math.floor(Math.random() * 30), y: Math.floor(Math.random() * 15) };
+        if (!st.pts.some(p => p.x === f.x && p.y === f.y)) { st.fruit = f; return; }
+      }
+    }
+    function step() {
+      if (st.over) return;
+      const opp = { up: 'down', down: 'up', left: 'right', right: 'left' };
+      if (st.next !== opp[st.dir]) st.dir = st.next;
+      const h = st.pts[0], d = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[st.dir];
+      const nh = { x: h.x + d[0], y: h.y + d[1] };
+      if (nh.x < 0 || nh.x >= 31 || nh.y < 0 || nh.y >= 15 || st.pts.some(p => p.x === nh.x && p.y === nh.y)) {
+        st.over = true; notifyError(); return;
+      }
+      st.pts.unshift(nh);
+      if (st.fruit && nh.x === st.fruit.x && nh.y === st.fruit.y) { st.len++; ledFlash('green', 120); placeFruit(); }
+      while (st.pts.length > st.len) st.pts.pop();
+    }
+    init();
+    push({
+      layer: 'fullscreen', app, name: 'スネークゲーム', hint: '↑↓←→ 操作　OK ゲームオーバー後に再開　戻る 終了',
+      enter() { setTimer(this, 250, step, true); },
+      draw(c) {
+        c.rect(0, 0, 128, 64);
+        const f = st.fruit; c.rframe(f.x * 4 + 1, f.y * 4 + 1, 6, 6, 2);
+        for (const p of st.pts) c.box(p.x * 4 + 2, p.y * 4 + 2, 4, 4);
+        if (st.over) {
+          c.setColor(0); c.box(34, 20, 62, 24); c.setColor(1); c.rect(34, 20, 62, 24);
+          c.setFont('primary'); c.str(37, 31, 'Game Over');
+          c.setFont('secondary'); c.strAligned(64, 41, 'center', 'bottom', `Score: ${st.len - 7}`);
+        }
+      },
+      input(e) {
+        if (e.type === 'press' && ['up', 'down', 'left', 'right'].includes(e.key)) { st.next = e.key; return true; }
+        if (e.type === 'short' && e.key === 'ok' && st.over) { init(); return true; }
+        if (e.type === 'short' && e.key === 'back') { exitApp(app); return true; }
+        return true;
+      },
+    });
+  }
+
+
+  /* ---------- shared helpers for the main apps ---------- */
+  const randomName = () => {
+    const L = ['ancient', 'hollow', 'strange', 'disappeared', 'unknown', 'unthinkable', 'unnameable', 'nameless', 'my', 'concealed', 'forgotten', 'hidden', 'mysterious', 'obscure', 'random', 'remote', 'uncharted', 'undefined', 'untraveled', 'untold'];
+    const R = ['door', 'entrance', 'doorway', 'entry', 'portal', 'entree', 'opening', 'crack', 'access', 'corridor', 'passage', 'port'];
+    const s = L[Math.floor(Math.random() * L.length)] + '_' + R[Math.floor(Math.random() * R.length)];
+    return s[0].toUpperCase() + s.slice(1);
+  };
+  function SavedPopup(app, onDone) {
+    return Popup({
+      app, name: '保存しました', hint: '',
+      icon: [36, 5, ART.dolphin_saved || ART.dolphin_wait],
+      header: ['Saved', 15, 19, 'left', 'bottom'],
+      timeout: 1500, onTimeout: onDone,
+    });
+  }
+  function saveFlow(app, folderPath, ext, header, extra, after) {
+    push(TextInput({
+      app, header, text: randomName(), part: app.part,
+      onDone: name => {
+        const node = fsAdd(folderPath, file(name + ext, { kind: app.kind, ...extra }));
+        notifySuccess();
+        replace(SavedPopup(app, () => { pop(); after && after(node); }));
+      },
+    }));
+  }
+  function savedBrowser(app, folderPath, kindIcon, onFile) {
+    push(FileBrowser({ app, name: '保存済みデータ（Saved）', part: app.part, root: fsGet(folderPath), fileIcon: FILE_ICONS[kindIcon], onFile }));
+  }
+
+  /* ---------- Sub-GHz ---------- */
+  const SG_FREQS = [300000000, 303875000, 304250000, 310000000, 315000000, 318000000, 390000000, 418000000, 433075000, 433420000, 433920000, 434420000, 434775000, 438900000, 868350000, 915000000, 925000000];
+  const SG_HOP = [310000000, 315000000, 318000000, 390000000, 433920000, 868350000];
+  const SG_PRESETS = ['AM270', 'AM650', 'FM238', 'FM12K', 'FM476'];
+  const sg = { freq: 10, preset: 1, hopping: false, binRaw: false, sound: false, hopIdx: 0, threshold: 0 };
+  const sgFreqText = f => `${String(Math.floor(f / 1e6) % 1000).padStart(3, '0')}.${String(Math.floor(f / 1e4) % 100).padStart(2, '0')}`;
+  const sgFreq = () => (sg.hopping ? SG_HOP[sg.hopIdx] : SG_FREQS[sg.freq]);
+  function SubGhzApp() {
+    const app = { id: 'subghz', part: 'subghz', kind: 'sub' };
+    push(Submenu({
+      app, part: 'subghz', name: 'Sub-GHz', items: [
+        { label: 'Read', action: () => push(SubGhzReceiver(app)) },
+        { label: 'Read RAW', action: () => push(SubGhzReadRaw(app)) },
+        { label: 'Saved', action: () => savedBrowser(app, 'subghz', 'sub', f => push(f.raw ? SubGhzReadRaw(app, f) : SubGhzTransmitter(app, f))) },
+        { label: 'Add Manually', action: () => push(Submenu({
+          app, part: 'subghz', name: '手動で追加（Add Manually）',
+          items: ['Princeton_433', 'Princeton_315', 'Nice Flo 12bit_433', 'Nice Flo 24bit_433', 'CAME 12bit_433', 'CAME 24bit_433', 'Linear_300', 'CAME TWEE', 'Gate TX_433', 'DoorHan_315', 'DoorHan_433', 'LiftMaster_315', 'LiftMaster_390', 'Security+2.0_310', 'Security+2.0_315', 'Security+2.0_390', 'Security+2.0_433']
+            .map(label => ({ label, action: () => saveFlow(app, 'subghz', '.sub', 'Name signal', { protocol: label.replace(/_\d+$/, ''), freq: (label.match(/_(\d+)$/) || [0, '433'])[1] }, () => {}) })),
+        })) },
+        { label: 'Frequency Analyzer', action: () => push(SubGhzAnalyzer(app)) },
+        { label: 'Region Information', action: () => push(TextPage({ app, part: 'subghz', name: '地域情報（Region Information）', lines: ['Region: N/A'] })) },
+        { label: 'Radio Settings', action: () => push(VarList({ app, part: 'subghz', name: '無線モジュール設定', items: [{ label: 'Module', values: ['Internal', 'External'], index: 0, locked: true }] })) },
+      ],
+    }));
+  }
+  function rssiNoise(prev) { const v = prev + (Math.random() - 0.5) * 3; return clamp(v, 0, Math.random() < 0.04 ? 14 : 6); }
+  function SubGhzReceiver(app) {
+    const v = {
+      layer: 'fullscreen', app, part: 'subghz', name: 'Sub-GHz 受信待ち（Read）',
+      hint() { return this.lock ? 'キー操作ロック中：戻るを3回押すと解除' : '← Config 受信設定　戻る 終了（実際の電波を受けると一覧に表示されます）'; },
+      rssi: 0, lock: false, bar: null, lockCount: 0, barTimer: null,
+      enter() { ledBlinkStart('cyan'); setTimer(this, 100, () => { this.rssi = rssiNoise(this.rssi); }, true); setTimer(this, 1000, () => { if (sg.hopping) sg.hopIdx = (sg.hopIdx + 1) % SG_HOP.length; }, true); },
+      exit() { ledBlinkStop(); },
+      resume() { ledBlinkStart('cyan'); },
+      draw(c) {
+        c.setFont('secondary');
+        el.buttonLeft(c, 'Config');
+        c.icon(0, 0, ART.scanning);
+        c.setFont('primary'); c.str(63, 44, 'Scanning...'); c.setFont('secondary');
+        c.icon(109, 0, ICON.antenna);
+        for (let i = 1; i < Math.round(this.rssi); i++) if (i % 5) { c.dot(46 + i, 52); c.dot(47 + i, 53); c.dot(46 + i, 54); }
+        if (this.bar === 'lock') { c.icon(64, 56, ICON.lock); c.str(74, 64, 'Locked'); return; }
+        if (this.bar === 'unlock') { c.icon(64, 56, ICON.unlock); c.str(74, 64, 'Unlocked'); return; }
+        c.str(44, 64, sgFreqText(sgFreq()));
+        c.str(79, 64, SG_PRESETS[sg.preset].slice(0, 2));
+        c.str(97, 64, '00/50');
+        if (this.bar === 'press') {
+          el.boldRoundedFrame(c, 14, 8, 99, 48);
+          el.multiline(c, 65, 26, 'To unlock\npress:');
+          c.icon(65, 42, ICON.backArrow); c.icon(80, 42, ICON.backArrow); c.icon(95, 42, ICON.backArrow);
+          c.icon(16, 13, ART.warning_dolphin);
+          c.dot(17, 61);
+        }
+      },
+      lockNow() {
+        this.lock = true; this.bar = 'lock'; changed();
+        clearTimer(this.barTimer);
+        this.barTimer = setTimer(this, 1000, () => { this.bar = null; backlightOff(); });
+      },
+      input(e) {
+        if (this.lock) {
+          if (this.bar !== 'unlock') this.bar = 'press';
+          if (this.lockCount === 0) {
+            clearTimer(this.barTimer);
+            this.barTimer = setTimer(this, 1000, () => {
+              this.bar = null;
+              if (this.lockCount < 3) backlightOff(); else { this.lock = false; changed(); }
+              this.lockCount = 0;
+            });
+          }
+          if (e.key === 'back' && e.type === 'short') this.lockCount++;
+          if (this.lockCount >= 3) {
+            this.bar = 'unlock';
+            clearTimer(this.barTimer);
+            this.barTimer = setTimer(this, 650, () => { this.bar = null; this.lock = false; this.lockCount = 0; changed(); });
+          }
+          return true;
+        }
+        if (e.key === 'back' && e.type === 'short') { pop(); return true; }
+        if (e.key === 'left' && e.type === 'short') { push(SubGhzReceiverConfig(app, this)); return true; }
+        return true;
+      },
+    };
+    return v;
+  }
+  function SubGhzReceiverConfig(app, receiver) {
+    const onOff = ['OFF', 'ON'];
+    const freq = { label: 'Frequency:', values: SG_FREQS.map(f => `${Math.floor(f / 1e6)}.${String(Math.floor(f / 1e4) % 100).padStart(2, '0')}`), index: sg.freq, change: i => { sg.freq = i; } };
+    const hop = { label: 'Hopping:', values: onOff, index: sg.hopping ? 1 : 0, change: i => { sg.hopping = !!i; freq.locked = sg.hopping; } };
+    freq.text = () => (sg.hopping ? ' -----' : freq.values[freq.index]);
+    freq.locked = sg.hopping;
+    return VarList({
+      app, part: 'subghz', name: 'Sub-GHz 受信設定（Config）', items: [
+        freq, hop,
+        { label: 'Modulation:', values: SG_PRESETS, index: sg.preset, change: i => { sg.preset = i; } },
+        { label: 'Bin_Raw:', values: onOff, index: sg.binRaw ? 1 : 0, change: i => { sg.binRaw = !!i; } },
+        { label: 'Sound:', values: onOff, index: sg.sound ? 1 : 0, change: i => { sg.sound = !!i; } },
+        { label: 'Lock Keyboard', action: () => { pop(); receiver.lockNow(); } },
+      ],
+    });
+  }
+  function SubGhzReadRaw(app, loaded) {
+    const v = {
+      layer: 'fullscreen', app, part: 'subghz', name: 'Sub-GHz 生データ録音（Read RAW）',
+      status: loaded ? 'loadidle' : 'start', hist: new Array(102).fill(0), ind: 0, wrapped: false, cur: 0, samples: 0, sin: 0, fileName: loaded ? loaded.name.replace(/\.sub$/, '') : '', saved: !!loaded,
+      hint() {
+        return {
+          start: '← Config 設定　OK REC 録音開始　戻る 終了',
+          rec: 'OK Stop 録音停止',
+          idle: '← Erase 消去　OK長押し Send 送信　→ Save 保存　戻る 終了',
+          loadidle: '← New 新規　OK長押し Send 送信　→ More その他　戻る 終了',
+          tx: 'OKを離すと送信停止',
+        }[this.status];
+      },
+      enter() {
+        setTimer(this, 50, () => {
+          if (this.status === 'rec') {
+            this.cur = Math.round(clamp(this.cur + (Math.random() - 0.5) * 4, 0, Math.random() < 0.05 ? 30 : 8));
+            this.hist[this.ind++] = this.cur;
+            if (this.ind > 100) { this.wrapped = true; this.ind = 0; }
+            this.samples += 40 + Math.floor(Math.random() * 160);
+          } else if (this.status === 'start') this.cur = Math.round(clamp(this.cur + (Math.random() - 0.5) * 3, 0, 6));
+          if (this.status === 'tx') this.sin++;
+        }, true);
+      },
+      exit() { ledBlinkStop(); },
+      setStatus(s) {
+        this.status = s;
+        if (s === 'rec') ledBlinkStart('red'); else if (s === 'tx') ledBlinkStart('magenta'); else ledBlinkStop();
+        changed();
+      },
+      draw(c) {
+        c.setFont('secondary');
+        c.str(0, 9, sgFreqText(SG_FREQS[sg.freq]));
+        c.str(35, 9, SG_PRESETS[sg.preset]);
+        c.strAligned(106, 2, 'right', 'top', `${this.samples} spl.`);
+        c.icon(109, 0, ICON.antenna);
+        c.line(0, 14, 115, 14); c.line(0, 48, 115, 48); c.line(115, 14, 115, 48);
+        const s = this.status;
+        if (s === 'idle') { el.buttonLeft(c, 'Erase'); el.buttonCenter(c, 'Send'); el.buttonRight(c, 'Save'); }
+        else if (s === 'loadidle') { el.buttonLeft(c, 'New'); el.buttonCenter(c, 'Send'); el.buttonRight(c, 'More'); c.strAligned(59, 35, 'center', 'center', this.fileName); }
+        else if (s === 'tx') el.buttonCenter(c, 'Hold to repeat');
+        else if (s === 'start') { el.buttonLeft(c, 'Config'); el.buttonCenter(c, 'REC'); }
+        else el.buttonCenter(c, 'Stop');
+        if (s === 'tx') {
+          for (let i = 113; i > 0; i--) {
+            const a = Math.round(Math.sin((i + this.sin * 16) / 6) * 11), b = Math.round(Math.sin(((i + this.sin * 16 + 1) * 2) / 6) * 11);
+            c.line(i, 32 - a, i + 1, 32 + b);
+          }
+          return;
+        }
+        if (s !== 'loadidle') {
+          if (!this.wrapped) {
+            for (let i = this.ind; i >= 0; i--) c.line(i, 47, i, 47 - this.hist[i]);
+            c.line(this.ind + 1, 47, this.ind + 1, 47 - this.cur);
+            if (this.ind > 3) {
+              c.line(this.ind - 1, 47, this.ind - 1, 47 - this.cur);
+              for (let i = 13; i < 47; i += 4) c.line(this.ind, i, this.ind, i + 2);
+              c.line(this.ind - 2, 12, this.ind + 2, 12); c.line(this.ind - 1, 13, this.ind + 1, 13);
+            }
+          } else {
+            const base = 100 - this.ind;
+            for (let i = 100; i > 0; i--) { let k = i - base; if (k < 0) k += 100; c.line(i, 47, i, 47 - this.hist[k]); }
+            c.line(99, 47, 99, 47 - this.cur); c.line(101, 47, 101, 47 - this.cur);
+            for (let i = 13; i < 47; i += 4) c.line(100, i, 100, i + 2);
+            c.line(98, 12, 102, 12); c.line(99, 13, 101, 13);
+          }
+          if (!this.wrapped) for (let i = 115; i > 0; i -= 15) { c.line(i, 14, i, 18); c.line(i - 5, 14, i - 5, 16); c.line(i - 10, 14, i - 10, 16); }
+          else for (let i = 115 - this.ind % 15; i > -15; i -= 15) { c.line(i, 14, i, 18); if (115 > i + 5) c.line(i + 5, 14, i + 5, 16); if (115 > i + 10) c.line(i + 10, 14, i + 10, 16); }
+          c.line(118, 46, 118, 50); c.line(117, 47, 117, 49); c.dot(116, 48);
+          c.vertical = true; c.str(128, 40, 'RSSI'); c.vertical = false;
+        }
+      },
+      input(e) {
+        const s = this.status;
+        if (e.key === 'ok' && (e.type === 'long' || e.type === 'repeat')) return false;
+        if (e.key === 'ok' && e.type === 'press' && (s === 'idle' || s === 'loadidle')) { this.before = s; this.setStatus('tx'); return true; }
+        if (e.key === 'ok' && e.type === 'release' && s === 'tx') { setTimer(this, 250, () => this.setStatus(this.before)); return true; }
+        if (e.key === 'back' && e.type === 'short') {
+          if (s === 'rec') { this.setStatus('idle'); return true; }
+          if (s === 'idle' && !this.saved) { push(SubGhzNeedSaving(app, this)); return true; }
+          pop(); return true;
+        }
+        if (e.type !== 'short') return true;
+        if (e.key === 'left') {
+          if (s === 'start') push(VarList({
+            app, part: 'subghz', name: 'RAW録音の設定（Config）', items: [
+              { label: 'Frequency:', values: SG_FREQS.map(sgFreqText), index: sg.freq, change: i => { sg.freq = i; } },
+              { label: 'Modulation:', values: SG_PRESETS, index: sg.preset, change: i => { sg.preset = i; } },
+              { label: 'RSSI Threshold:', values: ['-----', '-85.0', '-80.0', '-75.0', '-70.0', '-65.0', '-60.0', '-55.0', '-50.0', '-45.0', '-40.0'], index: sg.threshold, change: i => { sg.threshold = i; } },
+            ],
+          }));
+          else if (s === 'idle' || s === 'loadidle') { this.ind = 0; this.wrapped = false; this.samples = 0; this.fileName = ''; this.saved = false; this.hist.fill(0); this.setStatus('start'); }
+        } else if (e.key === 'right') {
+          if (s === 'idle') saveFlow(app, 'subghz', '.sub', 'Name signal', { raw: true }, node => { this.saved = true; this.fileName = node.name.replace(/\.sub$/, ''); this.setStatus('loadidle'); });
+          else if (s === 'loadidle') push(Submenu({ app, part: 'subghz', name: 'その他（More）', items: [{ label: 'Rename', action: () => push(NotSimulated(app, 'Renaming here')) }, { label: 'Delete', action: () => push(NotSimulated(app, 'Deleting here')) }] }));
+        } else if (e.key === 'ok') {
+          if (s === 'start') { this.ind = 0; this.wrapped = false; this.samples = 0; this.setStatus('rec'); }
+          else if (s === 'rec') this.setStatus('idle');
+        }
+        return true;
+      },
+    };
+    return v;
+  }
+  function SubGhzNeedSaving(app, rawView) {
+    return Dialog({
+      app, part: 'subghz', name: '保存せずに終了しますか？', hint: '← Stay 戻る　→ Exit 保存せず終了',
+      header: ['Exit to Sub-GHz Menu?', 64, 13, 'center', 'top'],
+      text: ['All unsaved data\nwill be lost', 64, 28, 'center', 'top'],
+      left: 'Stay', right: 'Exit',
+      onResult: r => { pop(); if (r === 'right') popTo(stack[stack.indexOf(rawView) - 1]); },
+    });
+  }
+  function SubGhzTransmitter(app, f) {
+    let sending = false;
+    return {
+      layer: 'fullscreen', app, part: 'subghz', name: '保存した信号の送信', hint: 'OK長押し Send 送信　戻る 前の画面へ',
+      draw(c) {
+        c.setFont('primary'); c.str(0, 10, f.protocol || 'Princeton');
+        c.setFont('secondary');
+        c.str(0, 22, 'Key: 0x00A1B2C3'); c.str(0, 32, 'Yek: 0xC3B2A100'); c.str(0, 42, 'Bit: 24');
+        c.str(78, 10, `${(f.freq || '433')}.92`.slice(0, 6)); c.str(113, 10, 'AM');
+        el.buttonCenter(c, 'Send');
+        if (sending) { c.icon(110, 22, ICON.antenna); }
+      },
+      input(e) {
+        if (e.key === 'ok' && e.type === 'press') { sending = true; ledBlinkStart('magenta'); return true; }
+        if (e.key === 'ok' && e.type === 'release') { sending = false; ledBlinkStop(); return true; }
+        return e.key === 'ok';
+      },
+    };
+  }
+  function SubGhzAnalyzer(app) {
+    const v = {
+      layer: 'fullscreen', app, part: 'subghz', name: '周波数アナライザー', hint: '←→ 表示切替（履歴／ログ）　戻る 終了', rssi: 0, log: false,
+      enter() { setTimer(this, 100, () => { this.rssi = Math.max(0, Math.round(rssiNoise(this.rssi / 2) * 2 - 3)); }, true); },
+      draw(c) {
+        c.setFont('secondary');
+        if (this.log) {
+          c.strAligned(64, 8, 'center', 'bottom', 'Frequency Analyzer [Time]');
+          c.setFont('keyboard'); c.rframe(27, 40, 73, 16, 5); c.strAligned(64, 51, 'center', 'bottom', 'No records'); c.setFont('secondary');
+        } else {
+          c.str(0, 8, 'Frequency Analyzer');
+          c.icon(109, 0, ICON.antenna);
+          c.str(0, 64, 'RSSI');
+          if (this.rssi) {
+            let r = Math.min(20, Math.floor(this.rssi / 3) + 2), col = 0;
+            for (let i = 1; i < r; i++) if (i % 4) { col++; c.box(20 + 2 * i, 64 - col, 2, col); }
+          }
+          c.setFont('keyboard');
+          for (let i = 0; i < 3; i++) { c.str(66, 43 + i * 10, '---.---'); c.str(110, 43 + i * 10, 'MHz'); }
+        }
+        c.setFont('bignum'); c.str(8, 29, '000.000');
+        c.setFont('primary'); c.str(96, 28, 'MHz');
+      },
+      input(e) {
+        if (e.key === 'back') return false;
+        if (e.type === 'short' && (e.key === 'left' || e.key === 'right')) { this.log = !this.log; return true; }
+        return true;
+      },
+    };
+    return v;
+  }
+
+  /* ---------- 125 kHz RFID ---------- */
+  function RfidApp() {
+    const app = { id: 'lfrfid', part: 'nfc', kind: 'rfid' };
+    const read = mode => push(RfidRead(app, mode));
+    push(Submenu({
+      app, part: 'nfc', name: '125 kHz RFID', items: [
+        { label: 'Read', action: () => read('auto') },
+        { label: 'Saved', action: () => savedBrowser(app, 'lfrfid', 'rfid', () => push(NotSimulated(app, 'Emulation'))) },
+        { label: 'Add Manually', action: () => push(Submenu({
+          app, part: 'nfc', name: '手動で追加（Add Manually）',
+          items: ['EM-Micro EM4100', 'EM-Micro EM4100/32', 'HID H10301', 'HID HIDProx', 'Motorola Indala26', 'Kantech IoProxXSF', 'AWID AWID', 'Generic FDX-A', 'ISO FDX-B', 'Viking Viking', 'Paradox Paradox', 'Keri Keri', 'Nexwatch Nexwatch', 'IDTECK IDTECK']
+            .map(label => ({ label, action: () => saveFlow(app, 'lfrfid', '.rfid', 'Name the card', {}, () => {}) })),
+        })) },
+        { label: 'Extra Actions', action: () => push(Submenu({
+          app, part: 'nfc', name: 'その他の機能（Extra Actions）', items: [
+            { label: 'Read ASK (Animal, Ordinary Card)', action: () => read('ask') },
+            { label: 'Read PSK (Indala)', action: () => read('psk') },
+            { label: 'Read RAW RFID data', action: () => push(NotSimulated(app, 'RAW capture')) },
+          ],
+        })) },
+      ],
+    }));
+  }
+  function RfidRead(app, mode) {
+    const v = {
+      layer: 'fullscreen', app, part: 'nfc', name: '125kHz RFID 読み取り中', hint: 'カードを背面に当てると読み取り（仮想機ではカードなし）　戻る 終了',
+      phase: mode === 'psk' ? 'psk' : 'ask', spinStart: now(),
+      enter() { ledBlinkStart('cyan'); if (mode === 'auto') setTimer(this, 2500, () => { this.phase = this.phase === 'ask' ? 'psk' : 'ask'; }, true); },
+      exit() { ledBlinkStop(); },
+      draw(c, t) {
+        c.icon(0, 8, ART.nfc_manual);
+        const spin = ICON.spinner[Math.floor((t - this.spinStart) / 125) % 4];
+        c.setFont('primary');
+        if (mode === 'auto') {
+          const ask = this.phase === 'ask';
+          c.str(70, 16, ask ? 'Reading 1/2' : 'Reading 2/2');
+          if (ask) { c.str(77, 29, 'ASK'); c.icon(70, 22, BTN.right); c.icon(102, 21, spin); c.setFont('secondary'); c.str(77, 43, 'PSK'); }
+          else { c.str(77, 43, 'PSK'); c.icon(70, 36, BTN.right); c.icon(102, 35, spin); c.setFont('secondary'); c.str(77, 29, 'ASK'); }
+        } else {
+          c.str(72, 16, 'Reading');
+          c.str(77, 35, mode === 'ask' ? 'ASK' : 'PSK');
+          c.icon(102, 27, spin);
+        }
+        c.setFont('secondary');
+        c.str(61, 56, "Don't move card");
+      },
+      input() { return false; },
+    };
+    return v;
+  }
+
+  /* ---------- NFC ---------- */
+  function NfcApp() {
+    const app = { id: 'nfc', part: 'nfc', kind: 'nfc' };
+    push(Submenu({
+      app, part: 'nfc', name: 'NFC', items: [
+        { label: 'Read', action: () => push(Popup({
+          app, part: 'nfc', name: 'NFC 読み取り中', hint: 'カードを背面に当てると読み取り（仮想機ではカードなし）　戻る 終了',
+          icon: [0, 8, ART.nfc_manual], header: ['Reading', 97, 15, 'center', 'top'], text: ['Hold card next\nto Flipper\'s back', 94, 27, 'center', 'top'],
+          enter: () => ledBlinkStart('cyan'), exit: () => ledBlinkStop(),
+        })) },
+        { label: 'Extract MF Keys', action: () => push(Popup({
+          app, part: 'nfc', name: 'MIFARE Classic の鍵の抽出', hint: 'リーダーに背面を近づけて操作　戻る 終了',
+          icon: [0, 8, ART.nfc_manual], header: ['Collecting', 97, 15, 'center', 'top'], text: ['Hold Flipper\nnext to reader', 94, 27, 'center', 'top'],
+          enter: () => ledBlinkStart('magenta'), exit: () => ledBlinkStop(),
+        })) },
+        { label: 'Saved', action: () => savedBrowser(app, 'nfc', 'nfc', () => push(NotSimulated(app, 'Emulation'))) },
+        { label: 'Extra Actions', action: () => push(Submenu({
+          app, part: 'nfc', name: 'その他の機能（Extra Actions）',
+          items: ['Read Specific Card Type', 'MIFARE Classic Keys', 'MIFARE Ultralight C Keys', 'Unlock NTAG/Ultralight', 'Unlock SLIX-L'].map(label => ({ label, action: () => push(NotSimulated(app, label)) })),
+        })) },
+        { label: 'Add Manually', action: () => push(Submenu({
+          app, part: 'nfc', name: '手動で追加（Add Manually）',
+          items: ['NFC-A 7-bytes UID', 'NFC-A 4-bytes UID', 'NTAG213', 'NTAG215', 'NTAG216', 'Mifare Ultralight', 'Mifare Classic 1k 4byte UID', 'Mifare Classic 1k 7byte UID', 'Mifare Classic 4k 4byte UID', 'Mifare Classic Mini']
+            .map(label => ({ label, action: () => saveFlow(app, 'nfc', '.nfc', 'Name the card', {}, () => {}) })),
+        })) },
+      ],
+    }));
+  }
+
+  /* ---------- Infrared ---------- */
+  function InfraredApp() {
+    const app = { id: 'infrared', part: 'ir', kind: 'ir' };
+    push(Submenu({
+      app, part: 'ir', name: '赤外線（Infrared）', items: [
+        { label: 'Universal Remotes', action: () => push(Submenu({
+          app, part: 'ir', name: 'ユニバーサルリモコン', items: [
+            { label: 'TVs', action: () => push(IrUniversalTv(app)) },
+            { label: 'Audio Players', action: () => push(NotSimulated(app, 'This remote')) },
+            { label: 'Projectors', action: () => push(NotSimulated(app, 'This remote')) },
+            { label: 'Air Conditioners', action: () => push(NotSimulated(app, 'This remote')) },
+          ],
+        })) },
+        { label: 'Learn New Remote', action: () => push(Popup({
+          app, part: 'ir', name: '赤外線の学習待ち', hint: 'リモコンを上面の赤外線窓に向けてボタンを押すと記録（仮想機では信号なし）　戻る 終了',
+          icon: [0, 32, ART.ir_learn], text: ['Point the remote at IR port\nand push the button', 5, 10, 'left', 'center'],
+          enter: () => ledBlinkStart('cyan'), exit: () => ledBlinkStop(),
+        })) },
+        { label: 'Saved Remotes', action: () => savedBrowser(app, 'infrared', 'ir', () => push(NotSimulated(app, 'This remote'))) },
+        { label: 'GPIO Settings', action: () => push(VarList({
+          app, part: 'gpio', name: '赤外線のGPIO設定', items: [
+            { label: 'Signal Output', values: ['Flipper', '2 (A7)'], index: 0 },
+            { label: '5V on GPIO', values: ['OFF', 'ON', 'Auto'], index: 0 },
+          ],
+        })) },
+      ],
+    }));
+  }
+  const IR_ICONS = {
+    power: I(['......#######......', '....##.......##....', '...#...........#...', '..#......#......#..', '.#...#...#...#...#.', '.#..#....#....#..#.', '#..#.....#.....#..#', '#..#.....#.....#..#', '#..#...........#..#', '#..#...........#..#', '#...#.........#...#', '.#...#.......#...#.', '.#....#######....#.', '..#.............#..', '...#...........#...', '....##.......##....', '......#######......', '...................', '...................', '...................']),
+    mute: I(['......#######......', '....##.......##....', '...#...........#...', '..#.............#..', '.#.....#........#..', '.#....##..#...#..#.', '#...####...#.#...#.', '#...####....#....#.', '#...####...#.#...#.', '#.....##..#...#..#.', '#......#.........#.', '.#..............#..', '.#.............#...', '..#...........#....', '...#.........#.....', '....##.....##......', '......#####........', '...................', '...................', '...................']),
+    up: I(['.......##########.......', '.....##..........##.....', '...##..............##...', '..#..................#..', '.#.........##.........#.', '.#........####........#.', '#........######........#', '#.......########.......#', '#......##########......#', '#..........##..........#', '#..........##..........#', '#..........##..........#', '.#.........##.........#.', '.#....................#.', '..#..................#..', '...##..............##...', '.....##..........##.....', '.......##########.......', '........................', '........................', '........................']),
+  };
+  IR_ICONS.down = rot180(IR_ICONS.up);
+  function invertIcon(ic) {
+    const out = Uint8Array.from(ic.bits);
+    for (let y = 0; y < ic.h; y++) {
+      let first = -1, last = -1;
+      for (let x = 0; x < ic.w; x++) if (ic.bits[y * ic.w + x]) { if (first < 0) first = x; last = x; }
+      if (first >= 0) for (let x = first; x <= last; x++) out[y * ic.w + x] = (x === first || x === last) ? 1 : (ic.bits[y * ic.w + x] ? 0 : 1);
+    }
+    return { w: ic.w, h: ic.h, bits: out };
+  }
+  // the TV remote screen is drawn rotated 90 degrees, like the firmware's vertical button panel
+  function IrUniversalTv(app) {
+    const items = [
+      { x: 0, y: 0, px: 6, py: 16, ic: IR_ICONS.power, name: 'Power' }, { x: 1, y: 0, px: 39, py: 16, ic: IR_ICONS.mute, name: 'Mute' },
+      { x: 0, y: 1, px: 3, py: 53, ic: IR_ICONS.up, name: 'Ch_next' }, { x: 1, y: 1, px: 38, py: 53, ic: IR_ICONS.up, name: 'Vol_up' },
+      { x: 0, y: 2, px: 3, py: 91, ic: IR_ICONS.down, name: 'Ch_prev' }, { x: 1, y: 2, px: 38, py: 91, ic: IR_ICONS.down, name: 'Vol_dn' },
+    ];
+    items.forEach(it => { it.hover = invertIcon(it.ic); });
+    const v = {
+      layer: 'fullscreen', vertical: true, app, part: 'ir', name: 'TVのユニバーサルリモコン（縦向き）',
+      hint() { return this.sending ? '戻る 送信を停止' : '本体を右に90°回して使う画面です　方向キー 選択　OK その操作の信号を送信'; },
+      sx: 0, sy: 0, sending: false, progress: 0, total: 0,
+      draw(c) {
+        c.setFont('primary'); c.str(25, 10, 'TV');
+        c.setFont('secondary');
+        c.str(5, 43, 'POWER'); c.str(39, 43, 'MUTE');
+        c.str(14, 86, 'CH'); c.str(44, 86, 'VOL');
+        for (const it of items) c.icon(it.px, it.py, it.x === this.sx && it.y === this.sy ? it.hover : it.ic);
+        if (this.sending) {
+          el.boldRoundedFrame(c, 0, 25, 63, 81);
+          c.setFont('secondary');
+          el.multilineAligned(c, 32, 34, 'center', 'center', 'Sending...');
+          el.progress(c, 4, 44, 56, this.progress / this.total);
+          el.multilineAligned(c, 33, 62, 'center', 'center', `${Math.floor((100 * this.progress) / this.total)}%`);
+          c.icon(14, 75, ICON.backArrow); c.str(28, 83, 'stop');
+          c.circle(19, 89, 4); c.str(28, 92, 'pause');
+        }
+      },
+      input(e) {
+        if (this.sending) {
+          if (e.key === 'back' && e.type === 'short') this.stop();
+          return true;
+        }
+        if (!isNav(e) && !(e.key === 'ok' && e.type === 'short')) return false;
+        // the view is rotated 90°, so remap the arrows to the on-screen directions
+        const k = e.key;
+        if (k === 'right' && this.sy < 2) this.sy++;
+        else if (k === 'left' && this.sy > 0) this.sy--;
+        else if (k === 'up' && this.sx < 1) this.sx++;
+        else if (k === 'down' && this.sx > 0) this.sx--;
+        else if (k === 'ok') this.start();
+        return k !== 'back';
+      },
+      start() {
+        this.sending = true; this.progress = 0; this.total = 40 + Math.floor(Math.random() * 30);
+        ledBlinkStart('magenta'); changed();
+        this.timer = setTimer(this, 120, () => { if (++this.progress >= this.total) this.stop(); }, true);
+      },
+      stop() { clearTimer(this.timer); this.sending = false; ledBlinkStop(); changed(); },
+      exit() { ledBlinkStop(); },
+    };
+    return v;
+  }
+
+  /* ---------- GPIO ---------- */
+  function GpioApp() {
+    const app = { id: 'gpio', part: 'gpio' };
+    push(VarList({
+      app, part: 'gpio', name: 'GPIO', items: [
+        { label: 'USB-UART Bridge', action: () => push(GpioUsbUart(app)) },
+        { label: 'GPIO Manual Control', action: () => push(GpioManual(app)) },
+        { label: '5V on GPIO', values: ['OFF', 'ON'], index: settings.otg ? 1 : 0, change: i => { settings.otg = !!i; } },
+      ],
+    }));
+  }
+  function GpioUsbUart(app) {
+    return {
+      layer: 'fullscreen', app, part: 'gpio', name: 'USB-UARTブリッジ', hint: '← Config 通信設定　戻る 終了',
+      draw(c) {
+        c.setFont('secondary');
+        el.buttonLeft(c, 'Config');
+        c.line(2, 10, 125, 10); c.line(44, 52, 123, 52);
+        c.setFont('primary'); c.str(2, 9, 'USB Serial'); c.str(3, 25, 'TX:'); c.str(3, 42, 'RX:');
+        c.setFont('secondary');
+        c.strAligned(126, 8, 'right', 'bottom', 'COM PORT:0');
+        c.str(22, 25, 'Pin 13'); c.str(22, 42, 'Pin 14');
+        c.str(45, 62, 'Baud: ????');
+        c.strAligned(127, 24, 'right', 'bottom', 'B.'); c.strAligned(127, 41, 'right', 'bottom', 'B.');
+        c.setFont('keyboard'); c.strAligned(116, 24, 'right', 'bottom', '0'); c.strAligned(116, 41, 'right', 'bottom', '0');
+        c.icon(48, 14, ICON.arrowUpEmpty); c.icon(48, 34, rot180(ICON.arrowUpEmpty));
+      },
+      input(e) {
+        if (e.type === 'short' && e.key === 'left') {
+          push(VarList({
+            app, part: 'gpio', name: 'USB-UARTの設定', items: [
+              { label: 'USB Channel', values: ['0', '1'], index: 0 },
+              { label: 'Baudrate', values: ['Host', '2400', '9600', '19200', '38400', '57600', '115200', '230400', '460800', '921600'], index: 0 },
+              { label: 'UART Pins', values: ['13,14', '15,16'], index: 0 },
+            ],
+          }));
+          return true;
+        }
+        return false;
+      },
+    };
+  }
+  function GpioManual(app) {
+    const pins = ['PA7', 'PA6', 'PA4', 'PB3', 'PB2', 'PC3', 'PC1', 'PC0', 'ALL'];
+    return {
+      layer: 'fullscreen', app, part: 'gpio', name: 'GPIO 手動制御', hint: '←→ ピン切替　OK押している間 そのピンを出力ON', idx: 0, high: false,
+      draw(c) {
+        c.setFont('primary'); el.multilineAligned(c, 64, 2, 'center', 'top', 'GPIO Output Mode Test');
+        c.setFont('secondary');
+        el.multilineAligned(c, 64, 16, 'center', 'top', 'Press < or > to change pin');
+        el.multilineAligned(c, 64, 32, 'center', 'top', pins[this.idx]);
+      },
+      input(e) {
+        if (e.type === 'short' && e.key === 'right') { this.idx = Math.min(pins.length - 1, this.idx + 1); return true; }
+        if (e.type === 'short' && e.key === 'left') { this.idx = Math.max(0, this.idx - 1); return true; }
+        if (e.key === 'ok') {
+          if (e.type === 'press') { this.high = true; ledFlash('green', 100000); }
+          if (e.type === 'release') { this.high = false; ledFlash('green', 0); }
+          return true;
+        }
+        return false;
+      },
+    };
+  }
+
+  /* ---------- iButton ---------- */
+  function IButtonApp() {
+    const app = { id: 'ibutton', part: 'ibutton', kind: 'ibutton' };
+    push(Submenu({
+      app, part: 'ibutton', name: 'iButton', items: [
+        { label: 'Read', action: () => push(Popup({
+          app, part: 'ibutton', name: 'iButton 読み取り中', hint: 'キーを接点に当てると読み取り（仮想機ではキーなし）　戻る 終了',
+          icon: [0, 10, ART.dolphin_wait], header: ['Reading', 95, 26, 'center', 'bottom'], text: ['Connect key\nwith pogo pins', 95, 30, 'center', 'top'],
+          enter: () => ledBlinkStart('cyan'), exit: () => ledBlinkStop(),
+        })) },
+        { label: 'Saved', action: () => savedBrowser(app, 'ibutton', 'ibutton', () => push(NotSimulated(app, 'Emulation'))) },
+        { label: 'Add Manually', action: () => push(Submenu({
+          app, part: 'ibutton', name: '手動で追加（Add Manually）',
+          items: ['Cyfral', 'DS1990', 'DS1992', 'DS1996', 'DS1971', 'DSGeneric', 'Metakom'].map(label => ({ label, action: () => saveFlow(app, 'ibutton', '.ibtn', 'Name the key', {}, () => {}) })),
+        })) },
+      ],
+    }));
+  }
+
+  /* ---------- Bad USB (keyboard-emulation app; this model reproduces only its on-screen UI) ---------- */
+  function BadUsbApp(fileNode) {
+    const app = { id: 'badusb', part: 'usb' };
+    const open = f => push(BadUsbWork(app, f));
+    if (fileNode) { open(fileNode); return; }
+    push(FileBrowser({ app, part: 'usb', name: 'Bad USB スクリプトの選択', root: fsGet('badusb'), fileIcon: FILE_ICONS.badusb, onFile: open }));
+  }
+  function BadUsbWork(app, f) {
+    const total = 40 + Math.floor(Math.random() * 60);
+    const v = {
+      layer: 'fullscreen', app, part: 'usb', name: 'Bad USB',
+      hint() { return this.state === 'idle' ? '→ 接続方式切替（USB/BLE）　OK Run 実行（仮想機ではPC未接続）　戻る 一覧へ' : 'OK Stop 停止'; },
+      state: 'idle', iface: 'USB', line: 0, total, anim: 0,
+      enter() { setTimer(this, 400, () => { this.anim ^= 1; if (this.state === 'run') { this.line = Math.min(this.total, this.line + 1 + Math.floor(Math.random() * 2)); if (this.line >= this.total) this.setState('done'); } }, true); },
+      setState(s) { this.state = s; if (s === 'run') ledBlinkStart('green'); else ledBlinkStop(); changed(); },
+      draw(c) {
+        c.setFont('secondary');
+        c.str(2, 8, el.fit(c, f.name, 126));
+        const e = Math.floor(this.line / this.total * 9000);
+        c.str(2, 8 + 11, `(default)  ${String(Math.floor(e / 60000)).padStart(2, '0')}:${String(Math.floor(e / 1000) % 60).padStart(2, '0')}.${Math.floor(e % 1000 / 100)}`);
+        c.icon(40, 26, this.iface === 'BLE' ? ART.connect_me : ART.usb_tree);
+        const s = this.state;
+        if (s === 'idle') { el.buttonCenter(c, 'Run'); el.buttonLeft(c, 'Config'); el.buttonRight(c, this.iface === 'BLE' ? 'USB' : 'BLE'); }
+        else el.buttonCenter(c, 'Stop');
+        if (s === 'idle') {
+          c.icon(4, 26, ICON.clock);
+          c.setFont('primary'); c.strAligned(127, 31, 'right', 'bottom', 'Connect'); c.strAligned(127, 43, 'right', 'bottom', 'to device');
+        } else {
+          c.icon(4, 23, ICON.smile);
+          c.strAligned(124, 47, 'right', 'bottom', `${this.line}/${this.total}`);
+          c.setFont('bignum'); c.strAligned(112, 37, 'right', 'bottom', String(Math.floor(this.line / this.total * 100)));
+          c.icon(115, 23, ICON.percent);
+        }
+      },
+      input(e) {
+        if (e.type !== 'short') return false;
+        if (this.state === 'idle') {
+          if (e.key === 'right') { this.iface = this.iface === 'BLE' ? 'USB' : 'BLE'; return true; }
+          if (e.key === 'ok') { this.line = 0; this.setState('run'); return true; }
+          if (e.key === 'left') { push(NotSimulated(app, 'Config')); return true; }
+        } else if (e.key === 'ok') { this.setState('idle'); return true; }
+        return false;
+      },
+      exit() { ledBlinkStop(); },
+    };
+    return v;
+  }
+
+  /* ---------- U2F ---------- */
+  function U2fApp() {
+    const app = { id: 'u2f', part: 'usb' };
+    const v = {
+      layer: 'fullscreen', app, part: 'usb', name: 'U2F セキュリティキー', hint: '仮想機ではPC未接続のため待機状態です　戻る 終了',
+      msg: 'notconnected',
+      enter() { setTimer(this, 2200, () => { if (this.msg === 'notconnected') { this.msg = 'idle'; changed(); } }); },
+      draw(c) {
+        c.icon(8, 14, ART.drive);
+        c.setFont('secondary');
+        if (this.msg === 'notconnected') { c.icon(22, 15, ART.connect_me); c.strAligned(64, 3, 'center', 'top', 'Connect me to computer'); }
+        else { c.icon(22, 15, ART.connect_me); c.strAligned(64, 3, 'center', 'top', 'Connected!'); }
+      },
+      input() { return false; },
+    };
+    push(v);
+  }
+
+  /* ---------- settings screens ---------- */
+  const PCT = ['0%', '5%', '10%', '15%', '20%', '25%', '30%', '35%', '40%', '45%', '50%', '55%', '60%', '65%', '70%', '75%', '80%', '85%', '90%', '95%', '100%'];
+  function BluetoothSettings() {
+    const app = { id: 'bt' };
+    push(VarList({
+      app, name: 'Bluetooth 設定', items: [
+        { label: 'Bluetooth', values: ['OFF', 'ON'], index: settings.bt ? 1 : 0, change: i => { settings.bt = !!i; } },
+        { label: 'Forget All Paired Devices', action: () => push(Dialog({
+          app, name: 'ペアリング解除の確認', hint: '← Cancel　→ Unpair 解除',
+          header: ['Unpair All Devices?', 64, 0, 'center', 'top'], text: ['All previous pairings\nwill be lost!', 64, 14, 'center', 'top'],
+          left: 'Cancel', right: 'Unpair', onResult: () => pop(),
+        })) },
+      ],
+    }));
+  }
+  function NotificationSettings() {
+    const app = { id: 'notify' };
+    const byVal = (arr, v) => { let b = 0; arr.forEach((x, i) => { if (Math.abs(x - v) < Math.abs(arr[b] - v)) b = i; }); return b; };
+    const CONTRAST = Array.from({ length: 17 }, (_, i) => i - 8);
+    const DELAY = [1000, 5000, 10000, 15000, 30000, 60000, 90000, 120000, 300000, 600000, 1800000];
+    const DELAY_T = ['1s', '5s', '10s', '15s', '30s', '60s', '90s', '120s', '5min', '10min', '30min'];
+    push(VarList({
+      app, name: 'LCDと通知の設定', items: [
+        { label: 'LCD Contrast', values: CONTRAST.map(String), index: byVal(CONTRAST, settings.contrast), change: i => { settings.contrast = CONTRAST[i]; } },
+        { label: 'LCD Backlight', values: PCT, index: Math.round(settings.backlight * 20), change: i => { settings.backlight = i / 20; backlightWake(); } },
+        { label: 'Backlight Time', values: DELAY_T, index: byVal(DELAY, settings.offDelay), text() { return DELAY_T[this.index]; }, change: i => { settings.offDelay = DELAY[i]; backlightWake(); } },
+        { label: 'LED Brightness', values: PCT, index: Math.round(settings.led * 20), change: i => { settings.led = i / 20; ledEmit(); } },
+        { label: 'Volume', values: PCT, index: Math.round(settings.volume * 20), change: i => { settings.volume = i / 20; } },
+        { label: 'Vibro', values: ['OFF', 'ON'], index: settings.vibro ? 1 : 0, change: i => { settings.vibro = !!i; emit('vibro', i ? 1 : 0); } },
+      ],
+    }));
+  }
+  function StorageSettings() {
+    const app = { id: 'storage' };
+    push(Submenu({
+      app, name: 'ストレージ設定（Storage）', items: [
+        { label: 'About Internal Storage', action: () => push(TextPage({ app, name: '内部ストレージ', lines: ['Label: Int', 'Type: LittleFS', 'Free: 16 KiB', 'Total: 1024 KiB'] })) },
+        { label: 'About SD Card', action: () => push(TextPage({ app, name: 'SDカード', lines: ['Label: FLIPPER', 'Type: FAT32', 'Free: 29.4 GiB', 'Total: 29.7 GiB'] })) },
+        { label: 'Unmount SD Card', action: () => push(NotSimulated(app, 'Unmounting the SD card')) },
+        { label: 'Format SD Card', action: () => push(NotSimulated(app, 'Formatting the SD card')) },
+        { label: 'Benchmark SD Card', action: () => push(NotSimulated(app, 'The SD benchmark')) },
+        { label: 'Factory Reset', action: () => push(NotSimulated(app, 'Factory reset')) },
+      ],
+    }));
+  }
+  function DesktopSettings() {
+    const app = { id: 'desktop' };
+    const AL = [0, 30000, 60000, 120000, 300000, 600000], AL_T = ['OFF', '30s', '60s', '2min', '5min', '10min'];
+    push(VarList({
+      app, name: 'デスクトップ設定（Desktop）', items: [
+        { label: 'PIN Setup', action: () => push(NotSimulated(app, 'PIN setup')) },
+        { label: 'Auto Lock Time', values: AL_T, index: Math.max(0, AL.indexOf(settings.autoLock)), change: i => { settings.autoLock = AL[i]; autoLockArm(); } },
+        { label: 'Show Clock', values: ['OFF', 'ON'], index: settings.clock ? 1 : 0, change: i => { settings.clock = !!i; } },
+        { label: 'Set Quick Access Apps', action: () => push(NotSimulated(app, 'Quick-access setup')) },
+        { label: 'Happy Mode', values: ['OFF', 'ON'], index: 0 },
+      ],
+    }));
+  }
+  function SystemSettings() {
+    const app = { id: 'system' };
+    push(VarList({
+      app, name: 'システム設定（System）', items: [
+        { label: 'Hand Orient', values: ['Right', 'Left'], index: 0 },
+        { label: 'Units', values: ['Metric', 'Imperial'], index: 0 },
+        { label: 'Time Format', values: ['24h', '12h'], index: 0 },
+        { label: 'Date Format', values: ['DD.MM', 'MM/DD', 'YMD'], index: 0 },
+        { label: 'Log Level', values: ['Default', 'None', 'Error', 'Warn', 'Info', 'Debug', 'Trace'], index: 0 },
+        { label: 'Debug', values: ['OFF', 'ON'], index: 0 },
+      ],
+    }));
+  }
+  function ExpansionSettings() {
+    const app = { id: 'expansion' };
+    push(VarList({ app, name: '拡張モジュール設定', items: [{ label: 'Listen UART', values: ['OFF', '13,14', '15,16'], index: 0 }] }));
+  }
+  function ClockSettings() {
+    const app = { id: 'clock' };
+    const st = { row: 0, col: 0, editing: false, alarmOn: false };
+    const d = () => new Date();
+    push({
+      layer: 'fullscreen', app, name: '時計とアラーム（Clock & Alarm）',
+      hint: '↑↓ 行　←→ 桁　OK 編集の開始／終了　編集中は↑↓で値を変更　戻る 前の画面へ',
+      draw(c) {
+        const block = (x, y, w, h, font, r, col, text) => {
+          const active = st.row === r && st.col === col;
+          c.setColor(1);
+          if (active) {
+            if (st.editing) { c.icon(x + w / 2 - 2, y - 4, I(['.#.', '###', '#.#'])); c.icon(x + w / 2 - 2, y + h + 1, I(['#.#', '###', '.#.'])); }
+            c.rbox(x, y, w, h, 1); c.setColor(0);
+          } else c.rframe(x, y, w, h, 1);
+          c.setFont(font); c.strAligned(x + w / 2, y + h / 2, 'center', 'center', text);
+          c.setColor(1);
+        };
+        const t = d();
+        c.setFont('primary'); c.str(0, 19, 'Time');
+        block(32, 4, 28, 20, 'bignum', 0, 0, String(t.getHours()).padStart(2, '0'));
+        c.box(62, 17, 2, 2); c.box(62, 11, 2, 2);
+        block(66, 4, 28, 20, 'bignum', 0, 1, String(t.getMinutes()).padStart(2, '0'));
+        c.box(96, 17, 2, 2); c.box(96, 11, 2, 2);
+        block(100, 4, 28, 20, 'bignum', 0, 2, String(t.getSeconds()).padStart(2, '0'));
+        c.setFont('primary'); c.str(0, 39, 'Date');
+        block(44, 30, 17, 12, 'primary', 1, 0, '26'); c.box(65, 38, 2, 2);
+        block(71, 30, 17, 12, 'primary', 1, 1, '10'); c.box(92, 38, 2, 2);
+        block(98, 30, 30, 12, 'primary', 1, 2, '2026');
+        c.setFont('primary'); c.str(0, 57, 'Alarm');
+        block(58, 48, 17, 12, 'primary', 2, 0, '07'); c.box(77, 56, 2, 2); c.box(77, 52, 2, 2);
+        block(81, 48, 17, 12, 'primary', 2, 1, '30');
+        block(106, 48, 22, 12, 'primary', 2, 2, st.alarmOn ? 'On' : 'Off');
+      },
+      input(e) {
+        if (e.type !== 'short') return false;
+        if (e.key === 'ok') { if (st.row === 2 && st.col === 2) st.alarmOn = !st.alarmOn; else st.editing = !st.editing; return true; }
+        if (e.key === 'back' && st.editing) { st.editing = false; return true; }
+        if (st.editing) return true;
+        if (e.key === 'up') st.row = Math.max(0, st.row - 1);
+        else if (e.key === 'down') st.row = Math.min(2, st.row + 1);
+        else if (e.key === 'left') st.col = Math.max(0, st.col - 1);
+        else if (e.key === 'right') st.col = Math.min(2, st.col + 1);
+        else return false;
+        return true;
+      },
+    });
+  }
+  function AboutApp() {
+    const app = { id: 'about' };
+    const pages = [
+      ['Product: Flipper Zero\nModel: FZ.1', 'FCC ID: 2A2V6-FZ\nIC: 27624-FZ'],
+      ['For all compliance\ncertificates, please visit:\nwww.flipp.dev/compliance'],
+      ['Flipper Devices Inc.\nSuite B #551, 2803\nPhiladelphia Pike, Claymont\nDE, USA 19703'],
+      ['HW Version Info:', '12.F7B9C4 R00:00 ' + device.name + '\nSerial Number:\n0038002E3338510C34313938'],
+      ['FW Version Info:', '1.3.4 [26-10-2026]\n0000000 [86.0] Release\n[7] dev'],
+    ];
+    let idx = 0;
+    const view = () => Dialog({
+      app, name: `端末情報（About） ${idx + 1}/${pages.length}`, hint: '← Prev 前へ　→ Next 次へ　戻る 終了',
+      header: pages[idx].length > 1 ? [pages[idx][0], 0, 0, 'left', 'top'] : null,
+      text: [pages[idx][pages[idx].length - 1], 0, pages[idx].length > 1 ? 26 : 0, 'left', 'top'],
+      left: idx > 0 ? 'Prev.' : null, right: idx < pages.length - 1 ? 'Next' : null,
+      onResult: r => { if (r === 'left' && idx > 0) { idx--; replace(view()); } else if (r === 'right' && idx < pages.length - 1) { idx++; replace(view()); } },
+    });
+    push(view());
+  }
+
+
+  /* =====================================================================
+     Physical 3D model (CSS 3D transforms) + wiring to the OS above.
+     ===================================================================== */
+  const BODY_W = 100, BODY_H = 40, BODY_D = 26, BODY_R = 8;
+  const mm = v => `calc(var(--u) * ${v})`;
+  const $ = s => document.querySelector(s);
+  const stage = $('#stage'), model = $('#model'), info = $('#info'), powerLabel = $('#powerLabel');
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const GPIO_PINS = ['5V', 'A7', 'A6', 'A4', 'B3', 'B2', 'C3', 'GND', '3V3', 'SWC', 'GND', 'SIO', 'TX', 'RX', 'C1', 'C0', '1W', 'GND'];
+
+  const PARTS = [
+    { id: 'screen', name: 'ディスプレイ', cat: '表示', face: 'front',
+      desc: '1.4インチ・128×64ピクセルのモノクロ液晶。オレンジ色のバックライトで屋外でも読みやすく、電池の消費も少ない。メニューや各アプリの画面、待ち受けのイルカを表示する。右の3Dモデルの画面は実機のファームウェアの画面遷移を再現している。',
+      specs: [['サイズ', '1.4インチ'], ['解像度', '128 × 64 px'], ['種類', 'モノクロLCD + バックライト']],
+      tip: 'OKでメインメニューが開きます。方向キーで選び、OKでアプリを開くと、そのアプリが使う部品の説明に自動で切り替わります。' },
+    { id: 'dpad', name: '方向キー', cat: '操作', face: 'front',
+      desc: '上下左右の4方向キー。メニューの移動、値の変更、一覧のスクロールなどに使う。短押し・長押し・押しっぱなし（リピート）を区別する。',
+      specs: [['ボタン', '上・下・左・右'], ['キーボード', '矢印キー']],
+      tip: '待ち受けでは ↑ロックメニュー、↓アーカイブ、←アプリ一覧、→パスポート。動作が固まったら「←」と「戻る」を同時に約5秒押すと再起動します。' },
+    { id: 'ok', name: 'OKボタン', cat: '操作', face: 'front',
+      desc: '方向キー中央の決定ボタン。待ち受けで押すとメインメニューが開く。項目の決定や、送信・録音の開始にも使う。',
+      specs: [['キーボード', 'Enter / Space']],
+      tip: 'アプリの中では、OKの短押し・長押しで動作が変わるものがあります（例：Sub-GHzのRAWは長押しで送信）。' },
+    { id: 'back', name: '戻るボタン', cat: '操作', face: 'front',
+      desc: '1つ前の画面に戻るボタン。電源ボタンも兼ねていて、電源オフ状態から長押しで起動、待ち受けで約5秒長押しすると電源オフの確認が出る。',
+      specs: [['キーボード', 'Esc / Backspace'], ['長押し', '起動・電源メニュー']],
+      tip: 'ロック中は戻るを素早く3回で解除。待ち受けで5秒長押しすると電源を切れます（右上の「電源オン/オフ」ボタンでも切り替わります）。' },
+    { id: 'led', name: 'ステータスLED', cat: '表示', face: 'front',
+      desc: 'フルカラーのRGB LED。充電中、読み取り中・成功・失敗、送信中などを色と点滅で知らせる。',
+      specs: [['種類', 'RGB LED']],
+      tip: '読み取り系はシアン、送信系はマゼンタ、成功時は緑など、本物と同じ配色で光ります。' },
+    { id: 'ir', name: '赤外線ポート', cat: '無線', face: 'top',
+      desc: 'テレビやエアコンなどのリモコン信号を受信して記録し、あとから送信できる赤外線の送受信部。上面の暗い窓の奥に送信用LEDと受光センサーがある。',
+      specs: [['送信', '赤外線LED'], ['受信', '赤外線受光モジュール'], ['主な用途', '家電リモコンの学習と送信']],
+      tip: 'メニューの「Infrared」がこの部品を使います。' },
+    { id: 'gpio', name: 'GPIOピン', cat: '入出力', face: 'top',
+      desc: '上面に並ぶ18ピンのヘッダー。Wi-Fiボードなどの拡張モジュールを挿したり、UART・SPI・I²Cで他の機器と通信したりできる。',
+      specs: [['ピン数', '18'], ['ロジック電圧', '3.3V（5V非対応）'], ['電源出力', '5V（1番）/ 3.3V（9番）'], ['GND', '8・11・18番']],
+      extra: () => `<div class="pinmap">${GPIO_PINS.map((p, i) => `<span class="${/5V|3V3/.test(p) ? 'pw' : ''}"><small>${i + 1}</small>${p}</span>`).join('')}</div>`,
+      tip: '1番ピンの5V出力は初期状態でオフ。メニューの「GPIO」→「5V on GPIO」でオンにできます。' },
+    { id: 'usb', name: 'USB-Cポート', cat: '入出力', face: 'left',
+      desc: '充電とPC接続用のUSB Type-Cポート。PCアプリからファームウェア更新やファイル転送ができる。キーボードとして振る舞うBad USBや、U2Fセキュリティキーとしての利用にも使う。',
+      specs: [['規格', 'USB 2.0 / Type-C'], ['用途', '充電・データ転送・ファーム更新']],
+      tip: 'メニューの「Bad USB」「U2F」はこのポートを使います。' },
+    { id: 'sd', name: 'microSDスロット', cat: '入出力', face: 'bottom',
+      desc: '読み取ったデータ、追加アプリ、各種データベースを保存するmicroSDカードの差し込み口。多くのアプリはカードがないと動かない。',
+      specs: [['対応', 'microSD（FAT32 / exFAT）'], ['最大容量', '256GB']],
+      tip: '待ち受けで ↓ を押すと、カードの中身（アーカイブ）を見られます。' },
+    { id: 'ibutton', name: 'iButton接点', cat: '入出力', face: 'bottom',
+      desc: '1-Wire方式の接触型キー（iButton）を読み書きする金属接点。海外のインターホンや入館システムで使われる、ボタン電池のような形の鍵をここに当てて使う。',
+      specs: [['方式', '1-Wire'], ['対応例', 'DS1990A, Cyfral, Metakom']],
+      tip: 'メニューの「iButton」がこの接点を使います。' },
+    { id: 'nfc', name: 'NFC / RFIDアンテナ', cat: '無線', face: 'back',
+      desc: '背面側に2種類のアンテナがある。NFC（13.56MHz）はICカードやタグ、125kHz RFIDは古い入館カードなどの低周波タグを読み取る。カードを背面に当てて使う。',
+      specs: [['NFC', '13.56MHz（ISO 14443A/B など）'], ['RFID', '125kHz（EM4100, HID Prox など）']],
+      tip: 'メニューの「NFC」と「125 kHz RFID」がこのアンテナを使います。' },
+    { id: 'subghz', name: 'Sub-GHzアンテナ', cat: '無線（内蔵）', face: 'back',
+      desc: 'ガレージや門のリモコン、ワイヤレスチャイムなど、1GHz未満の無線信号を受信・解析する内蔵アンテナと無線チップ。送信できる周波数は地域の法規制で制限される。',
+      specs: [['無線チップ', 'TI CC1101'], ['周波数帯', '300–348 / 387–464 / 779–928 MHz']],
+      tip: 'アンテナは内蔵で外からは見えません（背面の破線は透視イメージ）。メニューの「Sub-GHz」が使います。' },
+    { id: 'battery', name: 'バッテリー', cat: '内部', face: 'back',
+      desc: '内蔵のリチウムポリマー電池。待ち受け中心の使い方なら、1回の充電で約4週間持つとされる。',
+      specs: [['容量', '2100mAh'], ['充電', 'USB-C']],
+      tip: '残量は画面右上の電池アイコンに表示されます。設定の「Power」→「Battery Info」で詳細を確認できます。' },
+    { id: 'mcu', name: 'メインチップ', cat: '内部', face: 'back',
+      desc: '本体の頭脳となるマイコン。アプリ処理用のコアとBluetooth通信用のコアを2つ持つ。スマホアプリとの連携はBluetooth LEで行う。',
+      specs: [['チップ', 'STM32WB55RG'], ['CPU', 'Cortex-M4 64MHz + Cortex-M0+'], ['無線', 'Bluetooth LE'], ['メモリ', 'Flash 1MB / RAM 256KB']],
+      tip: 'ファームウェアはオープンソースで公開されています。' },
+  ];
+  PARTS.forEach((p, i) => { p.no = i + 1; });
+  const byId = Object.fromEntries(PARTS.map(p => [p.id, p]));
+
+  const VIEWS = {
+    front: { rx: -6, ry: 8 }, back: { rx: -6, ry: 172 }, top: { rx: -68, ry: 6 },
+    bottom: { rx: 66, ry: 6 }, left: { rx: -12, ry: 72 }, right: { rx: -12, ry: -72 },
+    home: { rx: -20, ry: 26 },
+  };
+  const FACE_NAMES = { front: '正面', back: '背面', top: '上面', bottom: '底面', left: '左側面', right: '右側面' };
+
+  /* ---------- build the body ---------- */
+  const faces = [];
+  function face(name, w, h, tf, n) {
+    const f = document.createElement('div');
+    f.className = 'face face-' + name;
+    f.style.cssText = `width:${mm(w)};height:${mm(h)};margin:${mm(-h / 2)} 0 0 ${mm(-w / 2)};transform:${tf}`;
+    model.append(f);
+    faces.push({ el: f, n });
+    return f;
+  }
+  function feat(f, part, x, y, w, h, cls, html = '') {
+    const d = document.createElement('div');
+    d.className = 'feat ' + cls;
+    d.dataset.part = part;
+    d.style.cssText = `left:${mm(x)};top:${mm(y)};width:${mm(w)};height:${mm(h)}`;
+    d.innerHTML = html;
+    f.append(d);
+    return d;
+  }
+  function mark(f, part, x, y) {
+    const m = document.createElement('div');
+    m.className = 'mark';
+    m.dataset.part = part;
+    m.textContent = byId[part].no;
+    m.style.cssText = `left:${mm(x)};top:${mm(y)}`;
+    f.append(m);
+  }
+
+  // rounded edges via stacked cross-section layers
+  const NLAYER = 24;
+  for (let i = 0; i < NLAYER; i++) {
+    const l = document.createElement('div');
+    l.className = 'layer' + (i === NLAYER / 2 ? ' seam' : '');
+    const z = -BODY_D / 2 + (i + .5) * BODY_D / NLAYER;
+    l.style.cssText = `width:${mm(BODY_W)};height:${mm(BODY_H)};margin:${mm(-BODY_H / 2)} 0 0 ${mm(-BODY_W / 2)};transform:translateZ(${mm(z)})`;
+    model.append(l);
+  }
+
+  const frontFace = face('front', BODY_W, BODY_H, `translateZ(${mm(BODY_D / 2)})`, [0, 0, 1]);
+  const backFace = face('back', BODY_W, BODY_H, `rotateY(180deg) translateZ(${mm(BODY_D / 2)})`, [0, 0, -1]);
+  const topFace = face('top', BODY_W - 2 * BODY_R, BODY_D, `rotateX(90deg) translateZ(${mm(BODY_H / 2)})`, [0, -1, 0]);
+  const bottomFace = face('bottom', BODY_W - 2 * BODY_R, BODY_D, `rotateX(-90deg) translateZ(${mm(BODY_H / 2)})`, [0, 1, 0]);
+  const leftFace = face('left', BODY_D, BODY_H - 2 * BODY_R, `rotateY(-90deg) translateZ(${mm(BODY_W / 2)})`, [-1, 0, 0]);
+  face('right', BODY_D, BODY_H - 2 * BODY_R, `rotateY(90deg) translateZ(${mm(BODY_W / 2)})`, [1, 0, 0]);
+
+  // front face
+  feat(frontFace, 'screen', 5, 6, 46, 28, 'bezel', '<canvas class="lcd" id="lcd" width="128" height="64"></canvas><div class="glass"></div>');
+  const ledEl = feat(frontFace, 'led', 54.2, 6.2, 2.8, 2.8, 'led');
+  feat(frontFace, 'dpad', 59, 7, 26, 26, 'dpad',
+    ['up', 'right', 'down', 'left'].map(k => `<div class="wedge" data-part="dpad" data-key="${k}"><i></i></div>`).join('') +
+    '<div class="okbtn" data-part="ok" data-key="ok"></div>');
+  const backBtn = feat(frontFace, 'back', 86.5, 27.3, 8, 8, 'backbtn',
+    '<svg viewBox="0 0 24 24" fill="none" stroke="#3A3D42" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 8 5 13l5 5"/><path d="M5 13h9a5 5 0 0 1 0 10h-1"/></svg>');
+  backBtn.dataset.key = 'back';
+  mark(frontFace, 'screen', 5, 6); mark(frontFace, 'led', 55.6, 3.2); mark(frontFace, 'dpad', 61, 9);
+  mark(frontFace, 'ok', 72, 16.5); mark(frontFace, 'back', 86.5, 27.3);
+
+  // top face
+  feat(topFace, 'ir', 4, 6, 15, 14, 'irwin');
+  feat(topFace, 'gpio', 33, 7.5, 47, 9.5, 'gpio',
+    `<div class="labels">${GPIO_PINS.map(p => `<span>${p}</span>`).join('')}</div><div class="pins">${'<i></i>'.repeat(18)}</div>`);
+  mark(topFace, 'ir', 4, 6); mark(topFace, 'gpio', 33, 7.5);
+
+  // bottom face
+  feat(bottomFace, 'ibutton', 6, 7, 16, 12, 'ibtn');
+  feat(bottomFace, 'sd', 52, 11.7, 15, 2.6, 'sdslot');
+  mark(bottomFace, 'ibutton', 6, 7); mark(bottomFace, 'sd', 52, 11.7);
+
+  // left face
+  feat(leftFace, 'usb', 8.5, 10.3, 9, 3.4, 'usbc');
+  mark(leftFace, 'usb', 8.5, 10.3);
+
+  // back face (x mirrored)
+  feat(backFace, 'nfc', 12, 6, 34, 28, 'xray coil', '<b>NFC 13.56MHz / RFID 125kHz</b>');
+  feat(backFace, 'subghz', 53, 3, 40, 3, 'xray antenna', '<b>Sub-GHz</b>');
+  feat(backFace, 'battery', 58, 10, 32, 24, 'xray', '<b>Li-Po 2100mAh</b>');
+  feat(backFace, 'mcu', 48.5, 14, 6.5, 6.5, 'xray chip', '<b>MCU</b>');
+  const st0 = document.createElement('div');
+  st0.className = 'sticker';
+  st0.style.cssText = `left:${mm(64)};top:${mm(13)};width:${mm(22)}`;
+  st0.textContent = '内部は透視イメージ（破線）';
+  backFace.append(st0);
+  mark(backFace, 'nfc', 12, 6); mark(backFace, 'subghz', 93, 3); mark(backFace, 'battery', 90, 10); mark(backFace, 'mcu', 48.5, 14);
+
+  /* ---------- hook the LCD + LED into the OS ---------- */
+  const lcd = $('#lcd');
+  ctx = lcd.getContext('2d');
+  img = ctx.createImageData(W, H);
+  on('led', s => {
+    if (s.mode === 'off') { ledEl.classList.remove('on'); return; }
+    ledEl.classList.add('on');
+    ledEl.style.setProperty('--led', s.color);
+    ledEl.style.opacity = s.brightness != null ? clamp(0.35 + s.brightness * 0.65, 0.3, 1) : 1;
+    if (s.mode === 'blink') {
+      clearInterval(ledEl._blink);
+      let on2 = true;
+      ledEl._blink = setInterval(() => { on2 = !on2; ledEl.classList.toggle('on', on2); }, s.period || 100);
+    } else {
+      clearInterval(ledEl._blink); ledEl._blink = null;
+    }
+  });
+
+  /* ---------- rotation + lighting ---------- */
+  const st = { rx: VIEWS.home.rx, ry: VIEWS.home.ry, z: 1, vx: 0, vy: 0, target: null, auto: false, drag: false };
+  const LIGHT = (() => { const v = [-0.35, -0.55, 0.76], n = Math.hypot(...v); return v.map(c => c / n); })();
+  let lastKey = '';
+  function applyTransform() {
+    const key = `${st.rx.toFixed(2)}|${st.ry.toFixed(2)}|${st.z.toFixed(3)}`;
+    if (key === lastKey) return;
+    lastKey = key;
+    model.style.transform = `scale(${st.z}) rotateX(${st.rx}deg) rotateY(${st.ry}deg)`;
+    stage.style.setProperty('--z', st.z);
+    const a = st.rx * Math.PI / 180, cc = st.ry * Math.PI / 180;
+    const ca = Math.cos(a), sa = Math.sin(a), ccc = Math.cos(cc), sc = Math.sin(cc);
+    for (const f of faces) {
+      const [x, y, z] = f.n;
+      const x1 = x * ccc + z * sc, z1 = -x * sc + z * ccc;
+      const y2 = y * ca - z1 * sa, z2 = y * sa + z1 * ca;
+      const lit = Math.max(0, x1 * LIGHT[0] + y2 * LIGHT[1] + z2 * LIGHT[2]);
+      f.el.style.setProperty('--shade', (0.3 * (1 - lit)).toFixed(3));
+    }
+  }
+  const clampRX = v => Math.max(-88, Math.min(88, v));
+  function animate() {
+    if (!st.drag) {
+      if (st.target) {
+        const k = reduced ? 1 : 0.14;
+        st.rx += (st.target.rx - st.rx) * k;
+        st.ry += (st.target.ry - st.ry) * k;
+        if (Math.abs(st.target.rx - st.rx) < 0.05 && Math.abs(st.target.ry - st.ry) < 0.05) {
+          st.rx = st.target.rx; st.ry = st.target.ry; st.target = null;
+        }
+      } else {
+        st.rx = clampRX(st.rx + st.vx); st.ry += st.vy;
+        st.vx *= 0.92; st.vy *= 0.92;
+        if (Math.abs(st.vx) < 0.01) st.vx = 0;
+        if (Math.abs(st.vy) < 0.01) st.vy = 0;
+        if (st.auto) st.ry += 0.3;
+      }
+    }
+    applyTransform();
+    requestAnimationFrame(animate);
+  }
+  function goView(v) {
+    const t = VIEWS[v];
+    st.vx = st.vy = 0;
+    st.target = { rx: t.rx, ry: t.ry + 360 * Math.round((st.ry - t.ry) / 360) };
+  }
+  function fit() {
+    const r = stage.getBoundingClientRect();
+    const u = Math.min(5.8, r.width * 0.7 / BODY_W, r.height * 0.92 / BODY_W);
+    document.documentElement.style.setProperty('--u', u.toFixed(3) + 'px');
+  }
+  addEventListener('resize', fit);
+  fit();
+
+  /* ---------- pointer / wheel / keyboard ---------- */
+  const ptrs = new Map();
+  let down = null, pinch = null;
+  stage.addEventListener('pointerdown', e => {
+    stage.setPointerCapture(e.pointerId);
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (ptrs.size === 2) {
+      const [p, q] = [...ptrs.values()];
+      pinch = { d: Math.hypot(p.x - q.x, p.y - q.y), z: st.z };
+      down = null; st.drag = false;
+      return;
+    }
+    const keyEl = e.target.closest('[data-key]');
+    if (keyEl && power.state === 'on') keyDown(keyEl.dataset.key);
+    down = { x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, t: e.target, keyEl, moved: false };
+    st.target = null; st.vx = st.vy = 0;
+  });
+  stage.addEventListener('pointermove', e => {
+    if (!ptrs.has(e.pointerId)) return;
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch && ptrs.size === 2) {
+      const [p, q] = [...ptrs.values()];
+      st.z = Math.max(0.6, Math.min(2.6, pinch.z * Math.hypot(p.x - q.x, p.y - q.y) / pinch.d));
+      return;
+    }
+    if (!down) return;
+    if (!down.moved && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) {
+      down.moved = true; st.drag = true; stage.classList.add('dragging');
+      if (down.keyEl) keyUp(down.keyEl.dataset.key, true);   // cancel: dragging, not a tap
+    }
+    if (down.moved) {
+      const dx = e.clientX - down.lx, dy = e.clientY - down.ly;
+      st.ry += dx * 0.4; st.rx = clampRX(st.rx - dy * 0.4);
+      st.vy = dx * 0.4; st.vx = -dy * 0.4;
+      down.lx = e.clientX; down.ly = e.clientY;
+    }
+  });
+  function endPointer(e) {
+    ptrs.delete(e.pointerId);
+    if (ptrs.size < 2) pinch = null;
+    if (!down) return;
+    if (down.keyEl) keyUp(down.keyEl.dataset.key, e.type !== 'pointerup');
+    if (!down.moved && e.type === 'pointerup') {
+      const p = down.t.closest('[data-part]');
+      if (p) selectPart(p.dataset.part, { fromTap: true });
+    }
+    if (down.moved) { st.drag = false; stage.classList.remove('dragging'); }
+    down = null;
+  }
+  stage.addEventListener('pointerup', endPointer);
+  stage.addEventListener('pointercancel', endPointer);
+  stage.addEventListener('wheel', e => {
+    e.preventDefault();
+    st.z = Math.max(0.6, Math.min(2.6, st.z * Math.exp(-e.deltaY * 0.0012)));
+  }, { passive: false });
+
+  const KEY_MAP = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Enter: 'ok', ' ': 'ok', Escape: 'back', Backspace: 'back' };
+  const heldKeys = new Set();
+  stage.addEventListener('keydown', e => {
+    const k = KEY_MAP[e.key];
+    if (!k) return;
+    e.preventDefault();
+    if (e.repeat || heldKeys.has(k)) return;
+    heldKeys.add(k);
+    flashKey(k, true);
+    keyDown(k);
+  });
+  stage.addEventListener('keyup', e => {
+    const k = KEY_MAP[e.key];
+    if (!k) return;
+    e.preventDefault();
+    heldKeys.delete(k);
+    flashKey(k, false);
+    keyUp(k);
+  });
+  stage.addEventListener('blur', () => { for (const k of heldKeys) { flashKey(k, false); keyUp(k, true); } heldKeys.clear(); });
+  function flashKey(key, on2) {
+    const el2 = model.querySelector(`[data-key="${key}"]`);
+    if (el2) el2.classList.toggle('pressed', on2);
+  }
+
+  /* ---------- toolbar ---------- */
+  document.querySelectorAll('#views [data-view]').forEach(btn => btn.addEventListener('click', () => goView(btn.dataset.view)));
+  const autoBtn = $('#autoBtn'), markBtn = $('#markBtn'), powerBtn = $('#powerBtn');
+  autoBtn.addEventListener('click', () => { st.auto = !st.auto; autoBtn.setAttribute('aria-pressed', st.auto); });
+  markBtn.addEventListener('click', () => {
+    const onv = markBtn.getAttribute('aria-pressed') !== 'true';
+    markBtn.setAttribute('aria-pressed', onv);
+    stage.classList.toggle('no-marks', !onv);
+  });
+  powerBtn.addEventListener('click', () => { if (power.state === 'off') boot(); else powerOff(); });
+  $('#resetBtn').addEventListener('click', () => { st.z = 1; st.auto = false; autoBtn.setAttribute('aria-pressed', 'false'); goView('home'); selectPart(null); if (power.state === 'off') boot(); });
+
+  on('screen', s => {
+    powerLabel.textContent = s.power === 'off' ? '電源オフ' : s.power === 'boot' ? '起動中…' : '';
+    powerBtn.textContent = s.power === 'off' ? '電源オン' : '電源オフ';
+    if (!manualSelect) renderInfoForScreen(s);
+    else renderManualInfo();
+  });
+
+  /* ---------- info panel ---------- */
+  const list = $('#partList');
+  list.innerHTML = PARTS.map(p => `<li><button type="button" data-id="${p.id}"><span class="n">${p.no}</span>${p.name}</button></li>`).join('');
+  list.addEventListener('click', e => { const btn = e.target.closest('button'); if (btn) selectPart(btn.dataset.id, { rotate: true }); });
+
+  let manualSelect = null;   // part id pinned by a tap/list click; null = follow the live screen
+  function selectPart(id, opt = {}) {
+    manualSelect = id;
+    model.querySelectorAll('.sel').forEach(el2 => el2.classList.remove('sel'));
+    list.querySelectorAll('button').forEach(b => b.setAttribute('aria-current', b.dataset.id === id));
+    if (!id) { renderInfoForScreen(screenInfo()); return; }
+    model.querySelectorAll(`.feat[data-part="${id}"], .mark[data-part="${id}"]`).forEach(el2 => el2.classList.add('sel'));
+    renderManualInfo();
+    if (opt.rotate) goView(byId[id].face);
+  }
+  function partInfoHTML(p, extraLead) {
+    return `
+      <div class="info-head"><span class="num">${p.no}</span>
+        <div><p class="cat">${p.cat} · ${FACE_NAMES[p.face]}</p><h2>${p.name}</h2></div></div>
+      ${extraLead || ''}
+      <p>${p.desc}</p>
+      <dl class="specs">${p.specs.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}</dl>
+      ${p.extra ? p.extra() : ''}
+      <p class="tip"><b>ヒント</b>${p.tip}</p>`;
+  }
+  function renderManualInfo() {
+    const p = byId[manualSelect];
+    if (!p) return;
+    const sc = screenInfo();
+    const liveLead = sc.part === p.id && sc.name ? `<div class="live"><div class="k">画面で実行中</div><div class="v">${esc(sc.name)}</div></div>` : '';
+    info.innerHTML = partInfoHTML(p, liveLead) + `
+      <div class="info-nav">
+        <button type="button" data-act="prev">← 前</button>
+        <button type="button" class="go" data-act="go">${FACE_NAMES[p.face]}を表示</button>
+        <button type="button" data-act="next">次 →</button>
+        <button type="button" data-act="live" style="flex-basis:100%">画面に連動させる</button>
+      </div>`;
+  }
+  const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  function renderInfoForScreen(s) {
+    if (s.power === 'off') {
+      info.innerHTML = `<p class="eyebrow">Power off</p><h2>電源オフ</h2>
+        <p>本体の電源が切れています。戻るボタンを長押しするか、右上の「電源オン」を押すと起動します。</p>
+        <div class="info-nav"><button type="button" class="go" data-act="boot">起動する</button></div>`;
+      return;
+    }
+    const p = s.part ? byId[s.part] : null;
+    const head = p
+      ? `<div class="info-head"><span class="num">${p.no}</span><div><p class="cat">いま画面で使っている部品</p><h2>${p.name}</h2></div></div>`
+      : `<div class="info-head"><div><p class="cat">Flipper Zero</p><h2>画面を操作中</h2></div></div>`;
+    info.innerHTML = `
+      ${head}
+      <div class="live"><div class="k">表示中の画面</div><div class="v">${esc(s.name || '待ち受け')}</div></div>
+      <p>${esc(s.hint || '')}</p>
+      ${p ? `<p class="tip"><b>この部品</b>${p.tip}</p>` : ''}
+      <dl class="specs">
+        <div><dt>本体サイズ</dt><dd>100.3 × 40.1 × 25.6 mm</dd></div>
+        <div><dt>重さ</dt><dd>約102 g</dd></div>
+        <div><dt>画面</dt><dd>1.4" 128×64 モノクロLCD</dd></div>
+      </dl>
+      <ul class="howto">
+        <li>ドラッグで回転、ホイール／ピンチで拡大縮小</li>
+        <li>方向キー・OK・戻るで画面のメニューを操作</li>
+        <li>パーツをタップすると、その部品の説明に切り替わります</li>
+      </ul>`;
+  }
+  info.addEventListener('click', e => {
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (!act) return;
+    if (act === 'boot') { boot(); return; }
+    if (act === 'live') { selectPart(null); return; }
+    const i = manualSelect ? byId[manualSelect].no - 1 : -1;
+    if (act === 'go') goView(byId[manualSelect].face);
+    if (act === 'prev') selectPart(PARTS[(i - 1 + PARTS.length) % PARTS.length].id, { rotate: true });
+    if (act === 'next') selectPart(PARTS[(i + 1) % PARTS.length].id, { rotate: true });
+  });
+
+  /* ---------- boot ---------- */
+  selectPart(null);
+  requestAnimationFrame(animate);
+  requestAnimationFrame(frame);
+  boot(600);
+})();
+</script>
+</body>
+</html>
