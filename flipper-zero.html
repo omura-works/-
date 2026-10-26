@@ -1,0 +1,789 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+</head>
+<body>
+<title>Flipper Zero 3D</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: 3Dステージ（左・可変）＋ 解説パネル（右・固定幅）。スマホでは縦積み。外部リソースなし＝オフライン動作 */
+:root {
+  --bg: #E7EAEE;
+  --surface: #FBFCFD;
+  --ink: #14171C;
+  --muted: #59616C;
+  --line: #D2D7DE;
+  --accent: #FF8200;
+  --accent-ink: #A14B00;
+  --accent-soft: rgba(255, 130, 0, .14);
+  --stage: #D9DEE4;
+  --grid: rgba(25, 35, 50, .09);
+  --font-ui: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  /* 本体の色（テーマに依存しない実物の色） */
+  --body: #F4F4F1;
+  --edge: #D9DAD5;
+  --seam: #C4C5C0;
+  --bezel: #26282B;
+  --key: #ECEDE9;
+  --key-ink: #3A3D42;
+  --u: 4px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0E1013; --surface: #171A1F; --ink: #E8EBEF; --muted: #98A1AC; --line: #2A3038;
+    --accent: #FF8A1F; --accent-ink: #FFA552; --accent-soft: rgba(255, 138, 31, .16);
+    --stage: #13161A; --grid: rgba(200, 215, 235, .07); color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0E1013; --surface: #171A1F; --ink: #E8EBEF; --muted: #98A1AC; --line: #2A3038;
+  --accent: #FF8A1F; --accent-ink: #FFA552; --accent-soft: rgba(255, 138, 31, .16);
+  --stage: #13161A; --grid: rgba(200, 215, 235, .07); color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg); color: var(--ink);
+  font: 14px/1.7 var(--font-ui);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 20px 28px;
+}
+.wrap { max-width: 1240px; margin: 0 auto; display: grid; gap: 16px; }
+
+/* ヘッダー */
+.top { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 8px 24px; }
+.eyebrow { margin: 0; font: 600 11px/1.4 var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--accent-ink); }
+h1 { margin: 2px 0 0; font-size: clamp(24px, 4vw, 34px); line-height: 1.15; letter-spacing: -.01em; font-weight: 800; text-wrap: balance; }
+.lede { margin: 4px 0 0; color: var(--muted); max-width: 60ch; }
+.offline { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; font: 600 12px/1.5 var(--font-mono); color: var(--muted); background: var(--surface); }
+.offline::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #2FA84F; }
+
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; }
+@media (max-width: 880px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+
+/* 3Dステージ */
+.viewer { display: grid; gap: 10px; min-width: 0; }
+.stage {
+  position: relative; overflow: hidden; border-radius: 14px;
+  height: clamp(320px, 58vh, 620px);
+  background:
+    radial-gradient(circle at 50% 45%, transparent 0 40%, rgba(0,0,0,.06) 100%),
+    radial-gradient(var(--grid) 1px, transparent 1.4px) 0 0 / 22px 22px,
+    var(--stage);
+  perspective: calc(var(--u) * 420);
+  touch-action: none; cursor: grab; user-select: none; -webkit-user-select: none;
+  outline: none;
+}
+.stage:focus-visible { box-shadow: 0 0 0 3px var(--accent); }
+.stage.dragging { cursor: grabbing; }
+.floor {
+  position: absolute; left: 50%; top: 50%;
+  width: calc(var(--u) * 112); height: calc(var(--u) * 16);
+  transform: translate(-50%, calc(var(--u) * 26)) scale(var(--z, 1));
+  background: radial-gradient(closest-side, rgba(0,0,0,.28), transparent);
+  filter: blur(6px); pointer-events: none;
+}
+.model { position: absolute; left: 50%; top: 50%; width: 0; height: 0; transform-style: preserve-3d; }
+.face, .layer { position: absolute; left: 0; top: 0; }
+.face { backface-visibility: hidden; -webkit-backface-visibility: hidden; background: var(--body); overflow: hidden; }
+.face::after { content: ""; position: absolute; inset: 0; background: rgba(0,0,0,var(--shade, 0)); pointer-events: none; z-index: 1; }
+.face-front, .face-back { border-radius: calc(var(--u) * 8); }
+.face-front {
+  background: linear-gradient(160deg, #FFFFFF 0%, var(--body) 55%, #ECECE8 100%);
+  box-shadow: inset 0 0 0 calc(var(--u) * .7) rgba(0,0,0,.05), inset 0 calc(var(--u) * .5) 0 rgba(255,255,255,.9);
+}
+.face-back { background: linear-gradient(200deg, #F7F7F4, #E9E9E5); box-shadow: inset 0 0 0 calc(var(--u) * .7) rgba(0,0,0,.06); }
+.face-top, .face-bottom { background: linear-gradient(to bottom, var(--edge) calc(50% - .5px), var(--seam) calc(50% - .5px) calc(50% + .5px), var(--edge) calc(50% + .5px)); }
+.face-left, .face-right { background: linear-gradient(to right, var(--edge) calc(50% - .5px), var(--seam) calc(50% - .5px) calc(50% + .5px), var(--edge) calc(50% + .5px)); }
+.layer { border-radius: calc(var(--u) * 8); background: #CFD0CB; }
+.layer.seam { background: #B9BAB5; }
+
+/* パーツ共通 */
+.feat { position: absolute; cursor: pointer; }
+.feat.sel { outline: calc(var(--u) * .6) solid var(--accent); outline-offset: calc(var(--u) * .7); }
+.mark {
+  position: absolute; z-index: 2; width: calc(var(--u) * 4.6); height: calc(var(--u) * 4.6);
+  margin: calc(var(--u) * -2.3) 0 0 calc(var(--u) * -2.3);
+  display: grid; place-items: center; border-radius: 50%;
+  background: var(--accent); color: #1C0E00; cursor: pointer;
+  font: 800 calc(var(--u) * 2.6)/1 var(--font-mono);
+  box-shadow: 0 0 0 calc(var(--u) * .5) #fff, 0 calc(var(--u) * .4) calc(var(--u) * 1.2) rgba(0,0,0,.3);
+  animation: pulse 2.4s ease-in-out infinite;
+}
+.mark.sel { background: #1C0E00; color: var(--accent); }
+.no-marks .mark { display: none; }
+@keyframes pulse { 50% { box-shadow: 0 0 0 calc(var(--u) * .5) #fff, 0 0 0 calc(var(--u) * 1.8) rgba(255,130,0,.35); } }
+
+/* 画面 */
+.bezel { border-radius: calc(var(--u) * 3.2); background: linear-gradient(170deg, #34373B, var(--bezel)); box-shadow: inset 0 calc(var(--u) * .4) calc(var(--u) * .8) rgba(0,0,0,.6); }
+.lcd {
+  position: absolute; left: calc(var(--u) * 5); top: calc(var(--u) * 5);
+  width: calc(var(--u) * 36); height: calc(var(--u) * 18);
+  image-rendering: pixelated; image-rendering: crisp-edges;
+  border-radius: calc(var(--u) * .4);
+  box-shadow: 0 0 calc(var(--u) * 2) rgba(255,140,30,.35);
+}
+.glass { position: absolute; inset: 0; border-radius: inherit; background: linear-gradient(115deg, rgba(255,255,255,.14) 0 30%, transparent 30.5%); pointer-events: none; }
+
+/* LED */
+.led { border-radius: 50%; background: radial-gradient(circle at 35% 35%, #fff, #C9CBC6 60%, #A9AAA5); box-shadow: inset 0 0 0 calc(var(--u) * .3) rgba(0,0,0,.15); }
+.led.blink { animation: blink .25s steps(2) 6; background: var(--led, #39A0FF); box-shadow: 0 0 calc(var(--u) * 3) var(--led, #39A0FF); }
+@keyframes blink { 50% { background: #C9CBC6; box-shadow: none; } }
+
+/* 方向パッド */
+.dpad { border-radius: 50%; overflow: hidden; background: #BFC0BB; box-shadow: 0 calc(var(--u) * .6) calc(var(--u) * 1.2) rgba(0,0,0,.2), inset 0 0 0 calc(var(--u) * .5) rgba(0,0,0,.08); }
+.wedge { position: absolute; inset: 0; background: radial-gradient(circle at 40% 30%, #FFFFFF, var(--key) 60%, #DCDDD8); cursor: pointer; }
+.wedge[data-key="up"]    { clip-path: polygon(50% 46%, 4% 0, 96% 0); }
+.wedge[data-key="right"] { clip-path: polygon(54% 50%, 100% 4%, 100% 96%); }
+.wedge[data-key="down"]  { clip-path: polygon(50% 54%, 96% 100%, 4% 100%); }
+.wedge[data-key="left"]  { clip-path: polygon(46% 50%, 0 96%, 0 4%); }
+.wedge i { position: absolute; width: 0; height: 0; border: calc(var(--u) * 1.3) solid transparent; }
+.wedge[data-key="up"] i    { left: 50%; top: 8%; transform: translateX(-50%); border-bottom-color: var(--key-ink); border-top-width: 0; }
+.wedge[data-key="down"] i  { left: 50%; bottom: 8%; transform: translateX(-50%); border-top-color: var(--key-ink); border-bottom-width: 0; }
+.wedge[data-key="left"] i  { top: 50%; left: 8%; transform: translateY(-50%); border-right-color: var(--key-ink); border-left-width: 0; }
+.wedge[data-key="right"] i { top: 50%; right: 8%; transform: translateY(-50%); border-left-color: var(--key-ink); border-right-width: 0; }
+.okbtn {
+  position: absolute; left: calc(var(--u) * 7.5); top: calc(var(--u) * 7.5);
+  width: calc(var(--u) * 11); height: calc(var(--u) * 11); border-radius: 50%; cursor: pointer;
+  background: radial-gradient(circle at 38% 32%, #fff, var(--key) 55%, #D3D4CF);
+  box-shadow: 0 0 0 calc(var(--u) * .9) #BFC0BB, 0 calc(var(--u) * .5) calc(var(--u) * 1) rgba(0,0,0,.25);
+}
+.backbtn {
+  border-radius: 50%; display: grid; place-items: center;
+  background: radial-gradient(circle at 38% 32%, #fff, var(--key) 55%, #D3D4CF);
+  box-shadow: 0 0 0 calc(var(--u) * .6) #C6C7C2, 0 calc(var(--u) * .5) calc(var(--u) * 1) rgba(0,0,0,.25);
+}
+.backbtn svg { width: 55%; height: 55%; pointer-events: none; }
+.wedge.pressed, .okbtn.pressed, .backbtn.pressed { background: #CFD0CB; box-shadow: inset 0 calc(var(--u) * .5) calc(var(--u) * 1) rgba(0,0,0,.3); }
+
+/* 上面・底面・側面 */
+.irwin { border-radius: calc(var(--u) * 2); background: linear-gradient(160deg, #4A1414, #1B0606); box-shadow: inset 0 calc(var(--u) * .4) calc(var(--u) * .8) rgba(0,0,0,.7); }
+.irwin::before { content: ""; position: absolute; left: 20%; top: 30%; width: 26%; height: 40%; border-radius: 50%; background: radial-gradient(circle, rgba(255,90,90,.5), transparent 70%); }
+.gpio { display: grid; grid-template-rows: auto 1fr; gap: calc(var(--u) * .4); }
+.gpio .labels, .gpio .pins { display: grid; grid-template-columns: repeat(18, 1fr); }
+.gpio .labels span { font: 700 calc(var(--u) * 1.05)/1 var(--font-mono); color: #555; text-align: center; letter-spacing: -.04em; }
+.gpio .pins { background: #1E1F21; border-radius: calc(var(--u) * .6); padding: calc(var(--u) * .5) 0; }
+.gpio .pins i { justify-self: center; align-self: center; width: calc(var(--u) * 1.1); height: calc(var(--u) * 1.1); background: #050505; box-shadow: inset 0 0 0 calc(var(--u) * .2) #6B6052; }
+.usbc { border-radius: calc(var(--u) * 1.7); background: #18191B; box-shadow: inset 0 0 0 calc(var(--u) * .45) #A8AAAD; }
+.usbc::before { content: ""; position: absolute; left: 22%; right: 22%; top: 42%; height: 16%; background: #5A5C5F; border-radius: 2px; }
+.sdslot { border-radius: calc(var(--u) * .6); background: #1A1B1D; box-shadow: inset 0 calc(var(--u) * .3) calc(var(--u) * .5) #000; }
+.ibtn { border-radius: calc(var(--u) * 2); background: #C7C8C3; box-shadow: inset 0 calc(var(--u) * .3) calc(var(--u) * .8) rgba(0,0,0,.35); }
+.ibtn::before, .ibtn::after { content: ""; position: absolute; top: 28%; height: 44%; border-radius: calc(var(--u) * .8); background: linear-gradient(#E9D9A6, #B89A4E); }
+.ibtn::before { left: 14%; width: 22%; }
+.ibtn::after { left: 46%; width: 40%; border-radius: 999px; }
+
+/* 背面（内部の透視イメージ） */
+.xray { border: calc(var(--u) * .35) dashed rgba(60,66,74,.55); border-radius: calc(var(--u) * 2); }
+.xray b { position: absolute; left: calc(var(--u) * 1); bottom: calc(var(--u) * .6); font: 700 calc(var(--u) * 1.6)/1.2 var(--font-mono); color: #4E545C; white-space: nowrap; }
+.coil { border-style: solid; border-color: rgba(181,120,40,.75); background:
+  repeating-radial-gradient(ellipse at 50% 50%, transparent 0 calc(var(--u) * 1.2), rgba(181,120,40,.35) calc(var(--u) * 1.2) calc(var(--u) * 1.6)); }
+.antenna { border-style: solid; border-color: rgba(181,120,40,.75); background: repeating-linear-gradient(90deg, rgba(181,120,40,.55) 0 calc(var(--u) * .5), transparent calc(var(--u) * .5) calc(var(--u) * 2)); border-radius: calc(var(--u) * .8); }
+.antenna b { bottom: auto; top: calc(var(--u) * 4); left: 0; }
+.chip { border-style: solid; background: #2C2F33; border-color: #1A1C1F; border-radius: calc(var(--u) * .6); }
+.chip b { color: #4E545C; bottom: calc(var(--u) * -2.6); left: calc(var(--u) * -1.6); }
+.sticker { position: absolute; border-radius: calc(var(--u) * 1); background: #E2E3DE; color: #6A6F76; padding: calc(var(--u) * .8); font: 600 calc(var(--u) * 1.3)/1.35 var(--font-mono); pointer-events: none; }
+
+.hint {
+  position: absolute; left: 12px; bottom: 10px; right: 12px; pointer-events: none;
+  font: 12px/1.5 var(--font-ui); color: var(--muted);
+}
+
+/* ツールバー */
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.seg { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); }
+.toolbar button, .info-nav button {
+  font: 600 13px/1 var(--font-ui); color: var(--ink); background: transparent;
+  border: 0; border-radius: 7px; padding: 9px 11px; cursor: pointer; min-height: 36px;
+}
+.toolbar button:hover, .info-nav button:hover { background: var(--accent-soft); }
+.toolbar button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+.toolbar button:focus-visible, .info-nav button:focus-visible, .parts button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* 解説パネル */
+.panel { display: grid; gap: 12px; min-width: 0; }
+.info { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; min-height: 280px; display: grid; gap: 12px; align-content: start; }
+.info h2 { margin: 0; font-size: 21px; line-height: 1.3; text-wrap: balance; }
+.info p { margin: 0; }
+.info-head { display: flex; gap: 12px; align-items: center; }
+.num { flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: #1C0E00; font: 800 15px/1 var(--font-mono); }
+.cat { font: 600 11px/1.4 var(--font-mono); letter-spacing: .1em; color: var(--accent-ink); }
+.specs { margin: 0; display: grid; border-top: 1px solid var(--line); }
+.specs div { display: grid; grid-template-columns: 7.5em 1fr; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.specs dt { color: var(--muted); font-size: 12.5px; }
+.specs dd { margin: 0; font-family: var(--font-mono); font-size: 12.5px; font-variant-numeric: tabular-nums; min-width: 0; overflow-wrap: anywhere; }
+.tip { padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); font-size: 13px; }
+.tip b { color: var(--accent-ink); margin-right: 6px; }
+.howto { margin: 0; padding-left: 1.2em; color: var(--muted); }
+.pinmap { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; }
+.pinmap span { display: grid; text-align: center; padding: 4px 0; border-radius: 6px; border: 1px solid var(--line); font: 600 11px/1.3 var(--font-mono); }
+.pinmap span small { color: var(--muted); font-weight: 400; }
+.pinmap span.pw { border-color: var(--accent); }
+.info-nav { display: flex; gap: 6px; flex-wrap: wrap; }
+.info-nav button { border: 1px solid var(--line); }
+.info-nav .go { flex: 1; background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.info-nav .go:hover { background: var(--ink); opacity: .88; }
+
+.parts { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px; }
+.parts h2 { margin: 2px 6px 8px; font: 600 11px/1.4 var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.parts ol { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; }
+.parts button {
+  width: 100%; display: flex; gap: 8px; align-items: center; text-align: left;
+  font: 13px/1.3 var(--font-ui); color: var(--ink); background: transparent; border: 0; border-radius: 8px; padding: 7px 6px; cursor: pointer;
+}
+.parts button:hover { background: var(--accent-soft); }
+.parts button[aria-current="true"] { background: var(--ink); color: var(--bg); }
+.parts button .n { flex: none; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: #1C0E00; font: 800 11px/1 var(--font-mono); }
+
+footer { color: var(--muted); font-size: 12px; max-width: 80ch; }
+
+@media (prefers-reduced-motion: reduce) {
+  .mark { animation: none; }
+  .led.blink { animation: none; }
+}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div>
+      <p class="eyebrow">Virtual model · 100.3 × 40.1 × 25.6 mm</p>
+      <h1>Flipper Zero 3D</h1>
+      <p class="lede">ドラッグで回して、ボタンや端子をタップすると説明が出ます。方向キーとOK・戻るボタンで画面のメニューも動かせます。</p>
+    </div>
+    <span class="offline">オフライン動作・外部読み込みなし</span>
+  </header>
+
+  <main class="layout">
+    <section class="viewer" aria-label="3Dモデル">
+      <div class="stage" id="stage" tabindex="0" aria-label="Flipper Zero の3Dモデル。矢印キー・Enter・Escで本体のボタンを操作できます">
+        <div class="floor"></div>
+        <div class="model" id="model"></div>
+        <p class="hint">ドラッグ：回転　ホイール／ピンチ：拡大　タップ：説明</p>
+      </div>
+      <div class="toolbar">
+        <div class="seg" id="views" role="group" aria-label="視点">
+          <button type="button" data-view="front">正面</button>
+          <button type="button" data-view="back">背面</button>
+          <button type="button" data-view="top">上面</button>
+          <button type="button" data-view="bottom">底面</button>
+          <button type="button" data-view="left">左側面</button>
+          <button type="button" data-view="right">右側面</button>
+        </div>
+        <div class="seg" role="group" aria-label="表示">
+          <button type="button" id="autoBtn" aria-pressed="false">自動回転</button>
+          <button type="button" id="markBtn" aria-pressed="true">番号マーカー</button>
+          <button type="button" id="resetBtn">リセット</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="panel">
+      <article class="info" id="info" aria-live="polite"></article>
+      <nav class="parts" aria-label="パーツ一覧">
+        <h2>パーツ一覧</h2>
+        <ol id="partList"></ol>
+      </nav>
+    </aside>
+  </main>
+
+  <footer>
+    非公式の仮想モデルです。寸法・部品の位置・内部構造は概略で、実機とは細部が異なります。電波やカードを扱う機能は、各国の法律と持ち主の許可の範囲内で使ってください。
+  </footer>
+</div>
+
+<script>
+(() => {
+  const W = 100, H = 40, D = 26, R = 8;
+  const mm = v => `calc(var(--u) * ${v})`;
+  const $ = s => document.querySelector(s);
+  const stage = $('#stage'), model = $('#model'), info = $('#info');
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const GPIO = ['5V','A7','A6','A4','B3','B2','C3','GND','3V3','SWC','GND','SIO','TX','RX','C1','C0','1W','GND'];
+
+  const PARTS = [
+    { id: 'screen', name: 'ディスプレイ', cat: '表示', face: 'front',
+      desc: '1.4インチ・128×64ピクセルのモノクロ液晶。オレンジ色のバックライトで、屋外でも読みやすく電池の消費も少ない。メニュー、各アプリの状態、待ち受けのイルカ（育成キャラクター）を表示する。',
+      specs: [['サイズ', '1.4インチ'], ['解像度', '128 × 64 px'], ['種類', 'モノクロLCD + バックライト']],
+      tip: 'このモデルでも、OKでメニューを開き、上下キーで選んで、OKでアプリを開けます。' },
+    { id: 'dpad', name: '方向キー', cat: '操作', face: 'front',
+      desc: '上下左右の4方向キー。メニューの移動、値の変更、ファイル一覧のスクロールなど、ほとんどの操作に使う。中央のOKボタンと合わせて5方向のボタンになっている。',
+      specs: [['ボタン', '上・下・左・右'], ['キーボード', '矢印キー（3D表示を選択中）']],
+      tip: '動作が固まったときは「左」と「戻る」を同時に約5秒長押しすると再起動できる。' },
+    { id: 'ok', name: 'OKボタン', cat: '操作', face: 'front',
+      desc: '方向キー中央の決定ボタン。待ち受け画面で押すとメインメニューが開く。項目の決定や、読み取り・送信の開始にも使う。',
+      specs: [['キーボード', 'Enter / Space']],
+      tip: 'メニューでアプリを選んでOKを押すと、そのアプリが使うハードウェアの説明に切り替わります。' },
+    { id: 'back', name: '戻るボタン', cat: '操作', face: 'front',
+      desc: '1つ前の画面に戻るボタン。電源ボタンも兼ねていて、電源オフの状態から長押しすると起動し、待ち受けで長押しすると電源メニューが出る。',
+      specs: [['キーボード', 'Esc / Backspace'], ['長押し', '起動・電源メニュー']],
+      tip: '「左」＋「戻る」の同時長押しで再起動（リセット）。' },
+    { id: 'led', name: 'ステータスLED', cat: '表示', face: 'front',
+      desc: 'フルカラーのRGB LED。充電中、読み取りの成功・失敗、通信中などを色と点滅で知らせる。',
+      specs: [['種類', 'RGB LED']],
+      tip: 'このモデルでは、アプリの中でOKを押すとLEDが点滅します。' },
+    { id: 'ir', name: '赤外線ポート', cat: '無線', face: 'top',
+      desc: 'テレビやエアコンなどのリモコン信号を受信して記録し、あとから送信できる赤外線の送受信部。上面の暗い窓の奥に、送信用LEDと受光センサーがある。',
+      specs: [['送信', '赤外線LED'], ['受信', '赤外線受光モジュール'], ['主な用途', '家電リモコンの学習と送信']],
+      tip: '本体の上面を家電に向けて使います。' },
+    { id: 'gpio', name: 'GPIOピン', cat: '入出力', face: 'top',
+      desc: '上面に並ぶ18ピンのヘッダー。Wi-Fiボードなどの拡張モジュールを挿したり、UART・SPI・I²Cでほかの電子機器と通信したりできる。',
+      specs: [['ピン数', '18'], ['ロジック電圧', '3.3V（5V非対応）'], ['電源出力', '5V（1番）/ 3.3V（9番）'], ['GND', '8・11・18番']],
+      extra: () => `<div class="pinmap">${GPIO.map((p, i) => `<span class="${/5V|3V3/.test(p) ? 'pw' : ''}"><small>${i + 1}</small>${p}</span>`).join('')}</div>`,
+      tip: '1番ピンの5V出力は初期状態ではオフ。GPIOアプリの設定で有効にする。' },
+    { id: 'usb', name: 'USB-Cポート', cat: '入出力', face: 'left',
+      desc: '充電とPC接続用のUSB Type-Cポート。PCアプリ（qFlipper）からファームウェア更新やファイル転送ができる。キーボードとして振る舞うBad USBや、U2Fセキュリティキーとしての利用にも使う。',
+      specs: [['規格', 'USB 2.0 / Type-C'], ['用途', '充電・データ転送・ファーム更新']],
+      tip: 'メニューの「Bad USB」「U2F」はこのポートを使います。' },
+    { id: 'sd', name: 'microSDスロット', cat: '入出力', face: 'bottom',
+      desc: '読み取ったデータ、追加アプリ、各種データベースを保存するmicroSDカードの差し込み口。多くのアプリはカードがないと動かない。',
+      specs: [['対応', 'microSD（FAT32 / exFAT）'], ['最大容量', '256GB']],
+      tip: 'カードは端子面を下にして奥まで押し込みます。' },
+    { id: 'ibutton', name: 'iButton接点', cat: '入出力', face: 'bottom',
+      desc: '1-Wire方式の接触型キー（iButton）を読み書きする金属接点。海外のインターホンや入館システムで使われる、ボタン電池のような形の鍵をここに当てて使う。',
+      specs: [['方式', '1-Wire'], ['対応例', 'Dallas DS1990A, Cyfral, Metakom']],
+      tip: '接点にキーをしっかり押し当てると読み取れます。' },
+    { id: 'nfc', name: 'NFC / RFIDアンテナ', cat: '無線', face: 'back',
+      desc: '背面側に2種類のアンテナがある。NFC（13.56MHz）はICカードやタグ、125kHz RFIDは古い入館カードや動物用マイクロチップなどの低周波タグを読み取る。カードを背面に当てて使う。',
+      specs: [['NFC', '13.56MHz（ISO 14443A/B など）'], ['RFID', '125kHz（EM4100, HID Prox など）']],
+      tip: 'メニューの「NFC」と「125 kHz RFID」がこのアンテナを使います。' },
+    { id: 'subghz', name: 'Sub-GHzアンテナ', cat: '無線（内蔵）', face: 'back',
+      desc: 'ガレージや門のリモコン、ワイヤレスチャイムなど、1GHz未満の無線信号を受信・解析するための内蔵アンテナと無線チップ。送信できる周波数は地域の法規制で制限される。',
+      specs: [['無線チップ', 'TI CC1101'], ['周波数帯', '300–348 / 387–464 / 779–928 MHz']],
+      tip: 'アンテナは本体に内蔵されていて、外からは見えません（背面の破線は透視イメージ）。' },
+    { id: 'battery', name: 'バッテリー', cat: '内部', face: 'back',
+      desc: '内蔵のリチウムポリマー電池。待ち受け中心の使い方なら、1回の充電で約4週間持つとされる。',
+      specs: [['容量', '2100mAh'], ['充電', 'USB-C']],
+      tip: '残量は待ち受け画面右上の電池アイコンで確認できます。' },
+    { id: 'mcu', name: 'メインチップ', cat: '内部', face: 'back',
+      desc: '本体の頭脳となるマイコン。アプリ処理用のコアと、Bluetooth通信用のコアの2つを持つ。スマホアプリとの連携はBluetooth LEで行う。',
+      specs: [['チップ', 'STM32WB55RG'], ['CPU', 'Cortex-M4 64MHz + Cortex-M0+'], ['無線', 'Bluetooth LE'], ['メモリ', 'Flash 1MB / RAM 256KB']],
+      tip: 'ファームウェアはオープンソースで公開されています。' },
+  ];
+  PARTS.forEach((p, i) => p.no = i + 1);
+  const byId = Object.fromEntries(PARTS.map(p => [p.id, p]));
+
+  const VIEWS = {
+    front: { rx: -6, ry: 8 }, back: { rx: -6, ry: 172 }, top: { rx: -68, ry: 6 },
+    bottom: { rx: 66, ry: 6 }, left: { rx: -12, ry: 72 }, right: { rx: -12, ry: -72 },
+    home: { rx: -20, ry: 28 },
+  };
+  const FACE_NAMES = { front: '正面', back: '背面', top: '上面', bottom: '底面', left: '左側面', right: '右側面' };
+
+  /* ---------- 本体の組み立て ---------- */
+  const faces = [];
+  function face(name, w, h, tf, n) {
+    const f = document.createElement('div');
+    f.className = 'face face-' + name;
+    f.style.cssText = `width:${mm(w)};height:${mm(h)};margin:${mm(-h / 2)} 0 0 ${mm(-w / 2)};transform:${tf}`;
+    model.append(f);
+    faces.push({ el: f, n });
+    return f;
+  }
+  function feat(f, part, x, y, w, h, cls, html = '') {
+    const d = document.createElement('div');
+    d.className = 'feat ' + cls;
+    d.dataset.part = part;
+    d.style.cssText = `left:${mm(x)};top:${mm(y)};width:${mm(w)};height:${mm(h)}`;
+    d.innerHTML = html;
+    f.append(d);
+    return d;
+  }
+  function mark(f, part, x, y) {
+    const m = document.createElement('div');
+    m.className = 'mark';
+    m.dataset.part = part;
+    m.textContent = byId[part].no;
+    m.style.cssText = `left:${mm(x)};top:${mm(y)}`;
+    f.append(m);
+  }
+
+  // 角の丸みを出すための断面レイヤー
+  const N = 24;
+  for (let i = 0; i < N; i++) {
+    const l = document.createElement('div');
+    l.className = 'layer' + (i === N / 2 ? ' seam' : '');
+    const z = -D / 2 + (i + .5) * D / N;
+    l.style.cssText = `width:${mm(W)};height:${mm(H)};margin:${mm(-H / 2)} 0 0 ${mm(-W / 2)};transform:translateZ(${mm(z)})`;
+    model.append(l);
+  }
+
+  const front = face('front', W, H, `translateZ(${mm(D / 2)})`, [0, 0, 1]);
+  const back = face('back', W, H, `rotateY(180deg) translateZ(${mm(D / 2)})`, [0, 0, -1]);
+  const top = face('top', W - 2 * R, D, `rotateX(90deg) translateZ(${mm(H / 2)})`, [0, -1, 0]);
+  const bottom = face('bottom', W - 2 * R, D, `rotateX(-90deg) translateZ(${mm(H / 2)})`, [0, 1, 0]);
+  const left = face('left', D, H - 2 * R, `rotateY(-90deg) translateZ(${mm(W / 2)})`, [-1, 0, 0]);
+  face('right', D, H - 2 * R, `rotateY(90deg) translateZ(${mm(W / 2)})`, [1, 0, 0]);
+
+  // 正面
+  feat(front, 'screen', 5, 6, 46, 28, 'bezel', '<canvas class="lcd" width="128" height="64"></canvas><div class="glass"></div>');
+  const ledEl = feat(front, 'led', 54.2, 6.2, 2.8, 2.8, 'led');
+  feat(front, 'dpad', 59, 7, 26, 26, 'dpad',
+    ['up', 'right', 'down', 'left'].map(k => `<div class="wedge" data-part="dpad" data-key="${k}"><i></i></div>`).join('') +
+    '<div class="okbtn" data-part="ok" data-key="ok"></div>');
+  const backBtn = feat(front, 'back', 86.5, 27.3, 8, 8, 'backbtn',
+    '<svg viewBox="0 0 24 24" fill="none" stroke="#3A3D42" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 7 4 12l5 5"/><path d="M4 12h10a6 6 0 0 1 0 12h-2" transform="translate(0 -6)"/></svg>');
+  backBtn.dataset.key = 'back';
+  mark(front, 'screen', 5, 6); mark(front, 'led', 55.6, 3.2); mark(front, 'dpad', 61, 9);
+  mark(front, 'ok', 72, 16.5); mark(front, 'back', 86.5, 27.3);
+
+  // 上面（ローカルyは 0=背面側, 26=正面側）
+  feat(top, 'ir', 4, 6, 15, 14, 'irwin');
+  feat(top, 'gpio', 33, 7.5, 47, 9.5, 'gpio',
+    `<div class="labels">${GPIO.map(p => `<span>${p}</span>`).join('')}</div><div class="pins">${'<i></i>'.repeat(18)}</div>`);
+  mark(top, 'ir', 4, 6); mark(top, 'gpio', 33, 7.5);
+
+  // 底面（ローカルyは 0=正面側）
+  feat(bottom, 'ibutton', 6, 7, 16, 12, 'ibtn');
+  feat(bottom, 'sd', 52, 11.7, 15, 2.6, 'sdslot');
+  mark(bottom, 'ibutton', 6, 7); mark(bottom, 'sd', 52, 11.7);
+
+  // 左側面（ローカルxは 0=背面側）
+  feat(left, 'usb', 8.5, 10.3, 9, 3.4, 'usbc');
+  mark(left, 'usb', 8.5, 10.3);
+
+  // 背面（左右反転：ローカルx 0 = 本体の右端）
+  feat(back, 'nfc', 12, 6, 34, 28, 'xray coil', '<b>NFC 13.56MHz / RFID 125kHz</b>');
+  feat(back, 'subghz', 53, 3, 40, 3, 'xray antenna', '<b>Sub-GHz</b>');
+  feat(back, 'battery', 58, 10, 32, 24, 'xray', '<b>Li-Po 2100mAh</b>');
+  feat(back, 'mcu', 48.5, 14, 6.5, 6.5, 'xray chip', '<b>MCU</b>');
+  const st0 = document.createElement('div');
+  st0.className = 'sticker';
+  st0.style.cssText = `left:${mm(64)};top:${mm(13)};width:${mm(22)}`;
+  st0.textContent = '内部は透視イメージ（破線）';
+  back.append(st0);
+  mark(back, 'nfc', 12, 6); mark(back, 'subghz', 93, 3); mark(back, 'battery', 90, 10); mark(back, 'mcu', 48.5, 14);
+
+  /* ---------- 液晶画面 ---------- */
+  const lcdCanvas = front.querySelector('.lcd');
+  const lctx = lcdCanvas.getContext('2d');
+  const buf = document.createElement('canvas');
+  buf.width = 128; buf.height = 64;
+  const b = buf.getContext('2d', { willReadFrequently: true });
+  const ON = [38, 20, 0], OFF = [255, 138, 26];
+  const MENU = [
+    { t: 'Sub-GHz', p: 'subghz', o: ['Read', 'Read RAW', 'Saved', 'Add Manually', 'Freq Analyzer'] },
+    { t: '125 kHz RFID', p: 'nfc', o: ['Read', 'Saved', 'Add Manually'] },
+    { t: 'NFC', p: 'nfc', o: ['Read', 'Detect Reader', 'Saved', 'Extra Actions'] },
+    { t: 'Infrared', p: 'ir', o: ['Learn New Remote', 'Saved Remotes', 'Universal Remotes'] },
+    { t: 'GPIO', p: 'gpio', o: ['USB-UART Bridge', 'Manual Control', '5V on GPIO'] },
+    { t: 'iButton', p: 'ibutton', o: ['Read', 'Saved', 'Add Manually'] },
+    { t: 'Bad USB', p: 'usb', o: ['Select Script'] },
+    { t: 'U2F', p: 'usb', o: ['Connect to USB'] },
+    { t: 'Apps', p: null, o: ['Games', 'Tools', 'Media'] },
+    { t: 'Settings', p: 'mcu', o: ['Bluetooth', 'Power', 'Storage', 'System'] },
+  ];
+  const lcd = { mode: 'idle', mi: 0, ai: 0, toast: 0 };
+
+  function drawIdle() {
+    const now = new Date();
+    b.font = 'bold 9px monospace';
+    b.textAlign = 'left';
+    b.fillText(String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0'), 2, 9);
+    b.strokeRect(104.5, 1.5, 19, 7); b.fillRect(124, 3, 2, 3); b.fillRect(106, 3, 14, 4);
+    // イルカ
+    b.lineWidth = 1.6;
+    b.beginPath(); b.ellipse(46, 40, 22, 10, -0.12, 0, Math.PI * 2); b.stroke();
+    b.beginPath(); b.moveTo(66, 37); b.quadraticCurveTo(78, 38, 67, 43); b.stroke();
+    b.beginPath(); b.moveTo(40, 31); b.quadraticCurveTo(45, 19, 53, 30); b.closePath(); b.fill();
+    b.beginPath(); b.moveTo(26, 42); b.lineTo(13, 33); b.lineTo(17, 43); b.lineTo(12, 53); b.closePath(); b.fill();
+    b.beginPath(); b.moveTo(46, 48); b.lineTo(42, 56); b.lineTo(52, 49); b.closePath(); b.fill();
+    b.fillRect(58, 36, 3, 3);
+    b.lineWidth = 1.2;
+    b.beginPath();
+    for (let x = 0; x <= 128; x += 8) { b.moveTo(x, 60); b.quadraticCurveTo(x + 4, 56, x + 8, 60); }
+    b.stroke();
+    b.font = 'bold 9px monospace';
+    b.fillText('Lv.3', 92, 30);
+    b.fillText('OK:Menu', 82, 44);
+  }
+  function drawList(items, idx, y0, rows) {
+    const topIdx = Math.max(0, Math.min(idx - Math.floor(rows / 2), items.length - rows));
+    b.font = 'bold 10px monospace';
+    b.textAlign = 'left';
+    for (let r = 0; r < rows && topIdx + r < items.length; r++) {
+      const i = topIdx + r, y = y0 + r * 12;
+      if (i === idx) {
+        b.fillRect(1, y, 119, 11);
+        b.fillStyle = '#fff'; b.fillText(items[i], 5, y + 9); b.fillStyle = '#000';
+      } else b.fillText(items[i], 5, y + 9);
+    }
+    if (items.length > rows) {
+      for (let y = y0; y < 63; y += 2) b.fillRect(125, y, 1, 1);
+      const h = Math.max(6, (63 - y0) * rows / items.length);
+      b.fillRect(124, y0 + (63 - y0 - h) * topIdx / (items.length - rows), 3, h);
+    }
+  }
+  function drawLCD() {
+    b.fillStyle = '#fff'; b.fillRect(0, 0, 128, 64);
+    b.fillStyle = '#000'; b.strokeStyle = '#000';
+    if (lcd.mode === 'idle') drawIdle();
+    else if (lcd.mode === 'menu') drawList(MENU.map(m => m.t), lcd.mi, 2, 5);
+    else {
+      const m = MENU[lcd.mi];
+      b.fillRect(0, 0, 128, 12);
+      b.fillStyle = '#fff'; b.font = 'bold 10px monospace'; b.textAlign = 'center';
+      b.fillText(m.t, 64, 9); b.fillStyle = '#000';
+      drawList(m.o, lcd.ai, 15, 4);
+      if (lcd.toast > Date.now()) {
+        b.fillStyle = '#fff'; b.fillRect(14, 18, 100, 28); b.fillStyle = '#000';
+        b.lineWidth = 2; b.strokeRect(15, 19, 98, 26);
+        b.font = 'bold 10px monospace'; b.textAlign = 'center';
+        b.fillText('Demo only', 64, 31); b.fillText('(virtual)', 64, 41);
+      }
+    }
+    const img = b.getImageData(0, 0, 128, 64), d = img.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const c = d[i] < 128 ? ON : OFF;
+      d[i] = c[0]; d[i + 1] = c[1]; d[i + 2] = c[2]; d[i + 3] = 255;
+    }
+    lctx.putImageData(img, 0, 0);
+  }
+  setInterval(() => lcd.mode === 'idle' && drawLCD(), 20000);
+
+  function blinkLED(color) {
+    ledEl.classList.remove('blink');
+    void ledEl.offsetWidth;
+    ledEl.style.setProperty('--led', color);
+    ledEl.classList.add('blink');
+    setTimeout(() => ledEl.classList.remove('blink'), 1600);
+  }
+
+  function press(key) {
+    const m = MENU[lcd.mi];
+    if (lcd.mode === 'idle') {
+      if (key === 'ok') { lcd.mode = 'menu'; }
+    } else if (lcd.mode === 'menu') {
+      if (key === 'up') lcd.mi = (lcd.mi + MENU.length - 1) % MENU.length;
+      if (key === 'down') lcd.mi = (lcd.mi + 1) % MENU.length;
+      if (key === 'back') lcd.mode = 'idle';
+      if (key === 'ok') {
+        lcd.mode = 'app'; lcd.ai = 0;
+        if (m.p) select(m.p, { fromApp: m.t });
+      }
+    } else {
+      if (key === 'up') lcd.ai = (lcd.ai + m.o.length - 1) % m.o.length;
+      if (key === 'down') lcd.ai = (lcd.ai + 1) % m.o.length;
+      if (key === 'back') { lcd.mode = 'menu'; lcd.toast = 0; }
+      if (key === 'ok') {
+        lcd.toast = Date.now() + 1500;
+        blinkLED(m.p === 'subghz' ? '#FF3FD0' : m.p === 'ir' ? '#FF4040' : '#39A0FF');
+        setTimeout(drawLCD, 1550);
+      }
+    }
+    drawLCD();
+  }
+  function flashKey(key) {
+    const el = model.querySelector(`[data-key="${key}"]`);
+    if (!el) return;
+    el.classList.add('pressed');
+    setTimeout(() => el.classList.remove('pressed'), 140);
+  }
+
+  /* ---------- 回転・ライティング ---------- */
+  const st = { rx: VIEWS.home.rx, ry: VIEWS.home.ry, z: 1, vx: 0, vy: 0, target: null, auto: false, drag: false };
+  const L = (() => { const v = [-0.35, -0.55, 0.76], n = Math.hypot(...v); return v.map(c => c / n); })();
+  let last = '';
+  function apply() {
+    const key = `${st.rx.toFixed(2)}|${st.ry.toFixed(2)}|${st.z.toFixed(3)}`;
+    if (key === last) return;
+    last = key;
+    model.style.transform = `scale(${st.z}) rotateX(${st.rx}deg) rotateY(${st.ry}deg)`;
+    stage.style.setProperty('--z', st.z);
+    const a = st.rx * Math.PI / 180, c = st.ry * Math.PI / 180;
+    const ca = Math.cos(a), sa = Math.sin(a), cc = Math.cos(c), sc = Math.sin(c);
+    for (const f of faces) {
+      const [x, y, z] = f.n;
+      const x1 = x * cc + z * sc, z1 = -x * sc + z * cc;
+      const y2 = y * ca - z1 * sa, z2 = y * sa + z1 * ca;
+      const lit = Math.max(0, x1 * L[0] + y2 * L[1] + z2 * L[2]);
+      f.el.style.setProperty('--shade', (0.3 * (1 - lit)).toFixed(3));
+    }
+  }
+  function tick() {
+    if (!st.drag) {
+      if (st.target) {
+        const k = reduced ? 1 : 0.14;
+        st.rx += (st.target.rx - st.rx) * k;
+        st.ry += (st.target.ry - st.ry) * k;
+        if (Math.abs(st.target.rx - st.rx) < 0.05 && Math.abs(st.target.ry - st.ry) < 0.05) {
+          st.rx = st.target.rx; st.ry = st.target.ry; st.target = null;
+        }
+      } else {
+        st.rx = clampRX(st.rx + st.vx); st.ry += st.vy;
+        st.vx *= 0.92; st.vy *= 0.92;
+        if (Math.abs(st.vx) < 0.01) st.vx = 0;
+        if (Math.abs(st.vy) < 0.01) st.vy = 0;
+        if (st.auto) st.ry += 0.3;
+      }
+    }
+    apply();
+    requestAnimationFrame(tick);
+  }
+  const clampRX = v => Math.max(-88, Math.min(88, v));
+  function goView(v) {
+    const t = VIEWS[v];
+    st.vx = st.vy = 0;
+    st.target = { rx: t.rx, ry: t.ry + 360 * Math.round((st.ry - t.ry) / 360) };
+  }
+
+  function fit() {
+    const r = stage.getBoundingClientRect();
+    const u = Math.min(5.6, r.width * 0.7 / W, r.height * 0.88 / W);
+    document.documentElement.style.setProperty('--u', u.toFixed(3) + 'px');
+  }
+  addEventListener('resize', fit);
+  fit();
+
+  /* ---------- 操作 ---------- */
+  const ptrs = new Map();
+  let down = null, pinch = null;
+  stage.addEventListener('pointerdown', e => {
+    stage.setPointerCapture(e.pointerId);
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (ptrs.size === 2) {
+      const [p, q] = [...ptrs.values()];
+      pinch = { d: Math.hypot(p.x - q.x, p.y - q.y), z: st.z };
+      down = null; st.drag = false;
+      return;
+    }
+    const keyEl = e.target.closest('[data-key]');
+    if (keyEl) keyEl.classList.add('pressed');
+    down = { x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, t: e.target, keyEl, moved: false, time: performance.now() };
+    st.target = null; st.vx = st.vy = 0;
+  });
+  stage.addEventListener('pointermove', e => {
+    if (!ptrs.has(e.pointerId)) return;
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch && ptrs.size === 2) {
+      const [p, q] = [...ptrs.values()];
+      st.z = Math.max(0.6, Math.min(2.4, pinch.z * Math.hypot(p.x - q.x, p.y - q.y) / pinch.d));
+      return;
+    }
+    if (!down) return;
+    if (!down.moved && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) {
+      down.moved = true; st.drag = true; stage.classList.add('dragging');
+      if (down.keyEl) down.keyEl.classList.remove('pressed');
+    }
+    if (down.moved) {
+      const dx = e.clientX - down.lx, dy = e.clientY - down.ly;
+      st.ry += dx * 0.4; st.rx = clampRX(st.rx - dy * 0.4);
+      st.vy = dx * 0.4; st.vx = -dy * 0.4;
+      down.lx = e.clientX; down.ly = e.clientY;
+    }
+  });
+  function endPointer(e) {
+    ptrs.delete(e.pointerId);
+    if (ptrs.size < 2) pinch = null;
+    if (!down) return;
+    if (down.keyEl) down.keyEl.classList.remove('pressed');
+    if (!down.moved && e.type === 'pointerup') {
+      const p = down.t.closest('[data-part]');
+      if (p) {
+        select(p.dataset.part);
+        const k = down.t.closest('[data-key]');
+        if (k) press(k.dataset.key);
+      }
+    }
+    if (performance.now() - down.time > 0 && down.moved) {
+      st.drag = false; stage.classList.remove('dragging');
+    }
+    down = null;
+  }
+  stage.addEventListener('pointerup', endPointer);
+  stage.addEventListener('pointercancel', endPointer);
+  stage.addEventListener('wheel', e => {
+    e.preventDefault();
+    st.z = Math.max(0.6, Math.min(2.4, st.z * Math.exp(-e.deltaY * 0.0012)));
+  }, { passive: false });
+  stage.addEventListener('keydown', e => {
+    const map = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Enter: 'ok', ' ': 'ok', Escape: 'back', Backspace: 'back' };
+    const k = map[e.key];
+    if (!k) return;
+    e.preventDefault();
+    flashKey(k);
+    press(k);
+  });
+
+  document.querySelectorAll('#views [data-view]').forEach(btn => btn.addEventListener('click', () => goView(btn.dataset.view)));
+  const autoBtn = $('#autoBtn'), markBtn = $('#markBtn');
+  autoBtn.addEventListener('click', () => {
+    st.auto = !st.auto;
+    autoBtn.setAttribute('aria-pressed', st.auto);
+  });
+  markBtn.addEventListener('click', () => {
+    const on = markBtn.getAttribute('aria-pressed') !== 'true';
+    markBtn.setAttribute('aria-pressed', on);
+    stage.classList.toggle('no-marks', !on);
+  });
+  $('#resetBtn').addEventListener('click', () => { st.z = 1; st.auto = false; autoBtn.setAttribute('aria-pressed', 'false'); goView('home'); select(null); });
+
+  /* ---------- 解説パネル ---------- */
+  const list = $('#partList');
+  list.innerHTML = PARTS.map(p => `<li><button type="button" data-id="${p.id}"><span class="n">${p.no}</span>${p.name}</button></li>`).join('');
+  list.addEventListener('click', e => {
+    const btn = e.target.closest('button');
+    if (btn) select(btn.dataset.id, { rotate: true });
+  });
+
+  let current = null;
+  function intro() {
+    info.innerHTML = `
+      <p class="eyebrow">How to use</p>
+      <h2>パーツをタップしてみよう</h2>
+      <p>オレンジの番号マーカーや、ボタン・端子そのものをタップすると、ここに説明が表示されます。右のパーツ一覧から選ぶと、その位置まで自動で回転します。</p>
+      <ul class="howto">
+        <li>ドラッグで回転、ホイールかピンチで拡大縮小</li>
+        <li>方向キー・OK・戻るボタンで画面のメニューを操作</li>
+        <li>3D表示を選択中は 矢印キー／Enter／Esc でも操作可能</li>
+      </ul>
+      <dl class="specs">
+        <div><dt>本体サイズ</dt><dd>100.3 × 40.1 × 25.6 mm</dd></div>
+        <div><dt>重さ</dt><dd>約102 g</dd></div>
+        <div><dt>画面</dt><dd>1.4" 128×64 モノクロLCD</dd></div>
+        <div><dt>バッテリー</dt><dd>2100 mAh</dd></div>
+      </dl>
+      <div class="info-nav"><button type="button" class="go" data-act="tour">1番から順に見る</button></div>`;
+  }
+  function select(id, opt = {}) {
+    current = id;
+    model.querySelectorAll('.sel').forEach(el => el.classList.remove('sel'));
+    list.querySelectorAll('button').forEach(b => b.setAttribute('aria-current', b.dataset.id === id));
+    if (!id) { intro(); return; }
+    const p = byId[id];
+    model.querySelectorAll(`.feat[data-part="${id}"], .mark[data-part="${id}"]`).forEach(el => el.classList.add('sel'));
+    info.innerHTML = `
+      <div class="info-head"><span class="num">${p.no}</span>
+        <div><p class="cat">${p.cat} · ${FACE_NAMES[p.face]}</p><h2>${p.name}</h2></div></div>
+      ${opt.fromApp ? `<p class="tip"><b>画面</b>「${opt.fromApp}」アプリはこのパーツを使います。</p>` : ''}
+      <p>${p.desc}</p>
+      <dl class="specs">${p.specs.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}</dl>
+      ${p.extra ? p.extra() : ''}
+      <p class="tip"><b>ヒント</b>${p.tip}</p>
+      <div class="info-nav">
+        <button type="button" data-act="prev" aria-label="前のパーツ">← 前</button>
+        <button type="button" class="go" data-act="go">${FACE_NAMES[p.face]}を表示</button>
+        <button type="button" data-act="next" aria-label="次のパーツ">次 →</button>
+      </div>`;
+    if (opt.rotate) goView(p.face === 'front' ? 'front' : p.face);
+  }
+  info.addEventListener('click', e => {
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (!act) return;
+    const i = current ? byId[current].no - 1 : -1;
+    if (act === 'tour') select(PARTS[0].id, { rotate: true });
+    if (act === 'go') goView(byId[current].face);
+    if (act === 'prev') select(PARTS[(i - 1 + PARTS.length) % PARTS.length].id, { rotate: true });
+    if (act === 'next') select(PARTS[(i + 1) % PARTS.length].id, { rotate: true });
+  });
+
+  intro();
+  drawLCD();
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
