@@ -1,0 +1,14 @@
+{
+  "name": "code-generated-showreel",
+  "version": "1.0.0",
+  "private": true,
+  "description": "映像も音もすべてコードから計算する 60 秒のショーリール",
+  "scripts": {
+    "audio": "python3 audio.py out/audio.wav",
+    "video": "node render.cjs",
+    "build": "mkdir -p out && npm run audio && npm run video"
+  },
+  "dependencies": {
+    "@fontsource/noto-sans-jp": "^5.3.1"
+  }
+}
