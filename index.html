@@ -32,7 +32,7 @@ body::before {
               radial-gradient(ellipse at 80% 80%, rgba(58,143,232,0.06) 0%, transparent 50%);
   pointer-events: none;
 }
-#particles { position: fixed; inset: 0; pointer-events: none; z-index: 0; }
+#particles { position: fixed; inset: 0; pointer-events: none; z-index: 350; }
 .app {
   position: relative; z-index: 1;
   display: flex; flex-direction: column; align-items: center;
@@ -373,6 +373,113 @@ header p { font-size: 0.75rem; color: var(--muted); letter-spacing: 0.2em; }
 }
 .btn-renumber:hover { border-color: var(--blue); background: rgba(58,143,232,0.1); }
 
+/* ===================== GACHA 演出 ===================== */
+.gacha {
+  position: fixed; inset: 0; z-index: 300; display: none;
+  flex-direction: column; align-items: center; justify-content: center;
+  background: radial-gradient(circle at 50% 45%, #1b1b3a 0%, #05050c 70%);
+  overflow: hidden; cursor: pointer; user-select: none; -webkit-user-select: none;
+  --gc: #3a8fe8;
+}
+.gacha.open { display: flex; }
+.gacha[data-lv="1"] { --gc: #f0c040; }
+.gacha[data-lv="2"] { --gc: #ff5ad1; }
+.gacha[data-r="n"] { --gc: #8a8aa0; }
+
+.g-rays {
+  position: absolute; left: 50%; top: 45%;
+  width: 220vmax; height: 220vmax; margin: -110vmax 0 0 -110vmax;
+  background: var(--gc);
+  -webkit-mask-image: repeating-conic-gradient(#000 0deg 5deg, transparent 5deg 18deg);
+          mask-image: repeating-conic-gradient(#000 0deg 5deg, transparent 5deg 18deg);
+  opacity: 0.10; animation: gSpin 10s linear infinite; transition: opacity 0.3s, background 0.2s;
+}
+.gacha[data-lv="1"] .g-rays { opacity: 0.18; }
+.gacha[data-lv="2"] .g-rays {
+  opacity: 0.3;
+  background: conic-gradient(#ff4d4d, #ffb84d, #fff94d, #4dff88, #4dd2ff, #6a5cff, #ff4dd8, #ff4d4d);
+}
+.gacha.reveal .g-rays { opacity: 0.28; animation-duration: 20s; }
+.gacha.reveal[data-lv="2"] .g-rays { opacity: 0.5; }
+.gacha.reveal[data-r="n"] .g-rays { opacity: 0.05; }
+@keyframes gSpin { to { transform: rotate(360deg); } }
+
+.g-plea {
+  position: relative; font-weight: 900; color: #fff; text-align: center;
+  font-size: clamp(1.6rem, 8vw, 3.2rem); letter-spacing: 0.08em;
+  text-shadow: 0 0 18px var(--gc), 0 0 2px #000; margin-bottom: 28px; padding: 0 12px;
+  animation: gTremble 0.09s linear infinite;
+}
+.g-plea.bump { animation: gBump 0.25s cubic-bezier(0.34,1.56,0.64,1), gTremble 0.07s linear 0.25s infinite; }
+@keyframes gTremble {
+  0% { transform: translate(1px, -1px) rotate(-0.6deg); }
+  50% { transform: translate(-1px, 1px) rotate(0.6deg); }
+  100% { transform: translate(1px, 1px) rotate(-0.3deg); }
+}
+@keyframes gBump { 0% { transform: scale(1.7); opacity: 0.2; } 100% { transform: scale(1); opacity: 1; } }
+
+.g-orb-wrap { position: relative; animation: gGrow 2s ease-in forwards; }
+@keyframes gGrow { from { transform: scale(0.6); } to { transform: scale(1.25); } }
+.g-orb {
+  width: 140px; height: 140px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #fff 0%, var(--gc) 42%, #05050c 130%);
+  box-shadow: 0 0 50px var(--gc), 0 0 120px var(--gc), inset 0 0 30px rgba(255,255,255,0.35);
+  animation: gShake 0.1s linear infinite; transition: box-shadow 0.2s;
+}
+.gacha[data-lv="2"] .g-orb {
+  background: radial-gradient(circle at 35% 30%, #fff 0%, rgba(255,255,255,0) 45%),
+              conic-gradient(#ff4d4d, #ffb84d, #fff94d, #4dff88, #4dd2ff, #6a5cff, #ff4dd8, #ff4d4d);
+  animation: gShake 0.06s linear infinite, gHue 0.8s linear infinite;
+}
+.g-orb.pulse { outline: 6px solid var(--gc); outline-offset: 0; animation: gShake 0.06s linear infinite, gRing 0.45s ease-out; }
+.gacha[data-lv="2"] .g-orb.pulse { animation: gShake 0.06s linear infinite, gHue 0.8s linear infinite, gRing 0.45s ease-out; }
+@keyframes gShake {
+  0% { transform: translate(2px, 1px); } 25% { transform: translate(-2px, -1px); }
+  50% { transform: translate(-1px, 2px); } 75% { transform: translate(2px, -2px); }
+  100% { transform: translate(1px, 1px); }
+}
+@keyframes gHue { to { filter: hue-rotate(360deg); } }
+@keyframes gRing { from { outline-offset: 0; outline-color: #fff; } to { outline-offset: 70px; outline-color: transparent; } }
+
+.g-flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+.g-flash.go { animation: gFlash 0.7s ease-out; }
+@keyframes gFlash { 0% { opacity: 1; } 100% { opacity: 0; } }
+
+.g-result { position: relative; display: none; flex-direction: column; align-items: center; text-align: center; padding: 0 12px; }
+.gacha.reveal .g-result { display: flex; animation: gPop 0.45s cubic-bezier(0.34,1.56,0.64,1); }
+.gacha.reveal .g-plea, .gacha.reveal .g-orb-wrap { display: none; }
+@keyframes gPop { 0% { transform: scale(0.2); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+.g-rank {
+  font-family: 'Bebas Neue', sans-serif; font-size: clamp(2.4rem, 11vw, 4.5rem); line-height: 1;
+  letter-spacing: 0.12em; color: var(--gc); text-shadow: 0 0 24px var(--gc); font-style: italic;
+}
+.g-rank small { font-family: 'Noto Sans JP', sans-serif; font-style: normal; font-weight: 900; font-size: 0.32em; letter-spacing: 0.15em; margin-left: 0.4em; vertical-align: middle; }
+.g-person { font-size: 1rem; color: #c8c8dc; letter-spacing: 0.1em; margin-top: 10px; }
+.g-seat {
+  font-family: 'Bebas Neue', sans-serif; font-size: clamp(7rem, 38vw, 13rem); line-height: 0.95;
+  color: #fff; text-shadow: 0 0 30px var(--gc), 0 0 80px var(--gc);
+}
+.gacha[data-lv="2"] .g-seat, .gacha[data-lv="2"] .g-rank {
+  background: linear-gradient(90deg, #ff4d4d, #ffb84d, #fff94d, #4dff88, #4dd2ff, #6a5cff, #ff4dd8, #ff4d4d);
+  background-size: 200% 100%;
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  text-shadow: none; filter: drop-shadow(0 0 18px rgba(255,255,255,0.55));
+  animation: gSlide 1.6s linear infinite;
+}
+@keyframes gSlide { to { background-position: 200% 0; } }
+.g-seatlabel { font-size: 0.85rem; color: #c8c8dc; letter-spacing: 0.3em; }
+.g-name { font-size: 1.3rem; font-weight: 900; color: #fff; margin-top: 6px; min-height: 1.4em; }
+.g-msg {
+  margin-top: 14px; font-weight: 900; font-size: clamp(1rem, 5vw, 1.5rem); color: #fff;
+  padding: 8px 18px; border: 1px solid var(--gc); background: rgba(0,0,0,0.55);
+  box-shadow: 0 0 18px var(--gc); letter-spacing: 0.06em;
+}
+.g-hint { position: absolute; bottom: 22px; left: 0; right: 0; text-align: center; font-size: 0.7rem; color: rgba(255,255,255,0.4); letter-spacing: 0.25em; }
+.btn-secondary.on { border-color: rgba(240,192,64,0.5); color: var(--gold); }
+@media (prefers-reduced-motion: reduce) {
+  .g-rays, .g-plea, .g-orb, .g-orb-wrap { animation: none !important; }
+}
+
 @media (max-width: 400px) {
   .desk { width: 46px; height: 46px; font-size: 1.2rem; }
   .row { gap: 3px; } .classroom { gap: 3px; }
@@ -426,7 +533,26 @@ header p { font-size: 0.75rem; color: var(--muted); letter-spacing: 0.2em; }
   </div>
   <div class="controls">
     <button class="btn-secondary" onclick="resetAll()">↩ リセット</button>
+    <button class="btn-secondary" id="gachaToggle" onclick="toggleGacha()"></button>
+    <button class="btn-secondary" id="soundToggle" onclick="toggleSound()"></button>
   </div>
+</div>
+
+<!-- GACHA OVERLAY -->
+<div class="gacha" id="gacha" onclick="gachaTap()">
+  <div class="g-rays"></div>
+  <div class="g-plea" id="gPlea"></div>
+  <div class="g-orb-wrap" id="gOrbWrap"><div class="g-orb" id="gOrb"></div></div>
+  <div class="g-result">
+    <div class="g-rank" id="gRank"></div>
+    <div class="g-person" id="gPerson"></div>
+    <div class="g-seat" id="gSeat"></div>
+    <div class="g-seatlabel">番の席</div>
+    <div class="g-name" id="gName"></div>
+    <div class="g-msg" id="gMsg"></div>
+  </div>
+  <div class="g-flash" id="gFlash"></div>
+  <div class="g-hint" id="gHint">TAP TO SKIP</div>
 </div>
 
 <!-- SETTINGS MODAL -->
@@ -608,24 +734,24 @@ function renderClassroom() {
 function drawSeat() {
   if (isAnimating || availableSeats.length === 0) return;
   isAnimating = true;
-  const btn = document.getElementById('drawBtn');
-  btn.disabled = true;
+  document.getElementById('drawBtn').disabled = true;
   const idx = Math.floor(Math.random() * availableSeats.length);
   const chosenSeat = availableSeats[idx];
   availableSeats.splice(idx, 1);
   filledSeats.add(chosenSeat);
   assignments[personNumber] = chosenSeat;
 
-  const resultIdle = document.getElementById('resultIdle');
-  const resultContent = document.getElementById('resultContent');
   const resultSeat = document.getElementById('resultSeat');
-  const resultPerson = document.getElementById('resultPerson');
-  const resultSeatName = document.getElementById('resultSeatName');
+  document.getElementById('resultIdle').style.display = 'none';
+  document.getElementById('resultContent').style.display = 'flex';
+  document.getElementById('resultPerson').textContent = `${personNumber}番目`;
+  document.getElementById('resultSeatName').textContent = '';
 
-  resultIdle.style.display = 'none';
-  resultContent.style.display = 'flex';
-  resultPerson.textContent = `${personNumber}番目`;
-  resultSeatName.textContent = '';
+  if (gachaOn) {
+    resultSeat.textContent = '?';
+    playGacha(chosenSeat, personNumber, () => finalizeDraw(chosenSeat, 0));
+    return;
+  }
 
   let rollCount = 0;
   const rollMax = 12;
@@ -635,33 +761,187 @@ function drawSeat() {
     rollCount++;
     if (rollCount >= rollMax) {
       clearInterval(rollInterval);
-      resultSeat.textContent = chosenSeat;
-      resultSeat.style.textShadow = '0 0 30px rgba(240,192,64,0.9)';
-      resultSeat.classList.remove('animate');
-      void resultSeat.offsetWidth;
-      resultSeat.classList.add('animate');
-      if (names[chosenSeat]) resultSeatName.textContent = `(${names[chosenSeat]})`;
-      setTimeout(() => {
-        const seatEl = document.getElementById(`seat-${chosenSeat}`);
-        if (seatEl) {
-          seatEl.className = 'desk filled just-filled';
-          seatEl.innerHTML = '';
-          seatEl.appendChild(document.createTextNode(chosenSeat));
-          const nameEl = document.createElement('div');
-          nameEl.className = 'desk-name';
-          nameEl.textContent = names[chosenSeat] || '';
-          seatEl.appendChild(nameEl);
-          emitSeatParticles(seatEl);
-          setTimeout(() => { seatEl.className = 'desk filled'; }, 600);
-        }
-        personNumber++;
-        updateCounters();
-        if (availableSeats.length === 0) showComplete();
-        else btn.disabled = false;
-        isAnimating = false;
-      }, 300);
+      finalizeDraw(chosenSeat, 300);
     }
   }, 60);
+}
+
+// 結果表示と座席表への反映（通常演出・ガチャ演出共通）
+function finalizeDraw(chosenSeat, delay) {
+  const btn = document.getElementById('drawBtn');
+  const resultSeat = document.getElementById('resultSeat');
+  resultSeat.textContent = chosenSeat;
+  resultSeat.style.textShadow = '0 0 30px rgba(240,192,64,0.9)';
+  resultSeat.classList.remove('animate');
+  void resultSeat.offsetWidth;
+  resultSeat.classList.add('animate');
+  if (names[chosenSeat]) document.getElementById('resultSeatName').textContent = `(${names[chosenSeat]})`;
+  setTimeout(() => {
+    const seatEl = document.getElementById(`seat-${chosenSeat}`);
+    if (seatEl) {
+      seatEl.className = 'desk filled just-filled';
+      seatEl.innerHTML = '';
+      seatEl.appendChild(document.createTextNode(chosenSeat));
+      const nameEl = document.createElement('div');
+      nameEl.className = 'desk-name';
+      nameEl.textContent = names[chosenSeat] || '';
+      seatEl.appendChild(nameEl);
+      emitSeatParticles(seatEl);
+      setTimeout(() => { seatEl.className = 'desk filled'; }, 600);
+    }
+    personNumber++;
+    updateCounters();
+    if (availableSeats.length === 0) showComplete();
+    else btn.disabled = false;
+    isAnimating = false;
+  }, delay);
+}
+
+// ===================== GACHA 演出 =====================
+// 動画の発言「出してくれ」をもとにした演出。セリフを変えたい場合は PLEA を書き換える。
+const PLEA = '出してくれ';
+const RARITY = {
+  ssr: { lv: 2, rank: 'SSR', title: '最後列',  msg: '出たーーー！！ 神席！！' },
+  sr:  { lv: 1, rank: 'SR',  title: '後方席',  msg: '出してくれた！ 当たり！' },
+  r:   { lv: 0, rank: 'R',   title: '',        msg: 'まあまあ…！' },
+  n:   { lv: 0, rank: 'N',   title: '最前列',  msg: `${PLEA}って言ったのに…` },
+};
+let gachaOn = true, soundOn = true;
+try {
+  gachaOn = localStorage.getItem('gachaOn') !== '0';
+  soundOn = localStorage.getItem('soundOn') !== '0';
+} catch (e) {}
+let gState = null, gTimers = [];
+
+// 席の位置でレア度を決める：最後列=SSR / 後ろから2列目=SR / 最前列=N / その他=R
+function seatRarity(seat) {
+  const used = seatLayout.map((r, i) => r.some(v => v !== null) ? i : -1).filter(i => i >= 0);
+  const pos = used.indexOf(seatLayout.findIndex(r => r.includes(seat))), n = used.length;
+  if (n >= 2 && pos === n - 1) return 'ssr';
+  if (n >= 4 && pos === n - 2) return 'sr';
+  if (n >= 3 && pos === 0) return 'n';
+  return 'r';
+}
+
+function gAt(ms, fn) { gTimers.push(setTimeout(fn, ms)); }
+function gClearTimers() { gTimers.forEach(clearTimeout); gTimers = []; }
+function gRestart(el, cls) { el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls); }
+function setPlea(text) {
+  const el = document.getElementById('gPlea');
+  el.textContent = text; gRestart(el, 'bump');
+}
+
+function playGacha(seat, person, done) {
+  const el = document.getElementById('gacha');
+  const rar = seatRarity(seat), meta = RARITY[rar];
+  gState = { stage: 'charge', seat, person, rar, done, t: 0 };
+  el.dataset.lv = '0'; el.dataset.r = '';
+  el.classList.remove('reveal'); el.classList.add('open');
+  document.getElementById('gHint').textContent = 'TAP TO SKIP';
+  document.getElementById('gFlash').classList.remove('go');
+  gRestart(document.getElementById('gOrbWrap'), 'g-orb-wrap');
+  setPlea(`${PLEA}…！`);
+  sfxCharge();
+  // 昇格演出：青 → 金(SR以上) → 虹(SSR)
+  const step = (lv, text) => {
+    setPlea(text);
+    if (meta.lv >= lv) {
+      el.dataset.lv = String(lv);
+      gRestart(document.getElementById('gOrb'), 'pulse');
+      tone(lv === 1 ? 880 : 1320, 0, 0.25, 'square', 0.06);
+    }
+  };
+  gAt(700,  () => step(1, `${PLEA}！！`));
+  gAt(1350, () => step(2, `${PLEA}ぇぇ！！！`));
+  gAt(2000, gachaReveal);
+}
+
+function gachaReveal() {
+  if (!gState || gState.stage !== 'charge') return;
+  gClearTimers(); sfxStopCharge();
+  const el = document.getElementById('gacha');
+  const { seat, person, rar } = gState, meta = RARITY[rar];
+  gState.stage = 'reveal'; gState.t = Date.now();
+  el.dataset.lv = String(meta.lv); el.dataset.r = rar;
+  const rank = document.getElementById('gRank');
+  rank.textContent = meta.rank;
+  if (meta.title) { const sm = document.createElement('small'); sm.textContent = meta.title; rank.appendChild(sm); }
+  document.getElementById('gPerson').textContent = `${person}番目`;
+  document.getElementById('gSeat').textContent = seat;
+  document.getElementById('gName').textContent = names[seat] || '';
+  document.getElementById('gMsg').textContent = meta.msg;
+  document.getElementById('gHint').textContent = 'TAP TO CLOSE';
+  el.classList.add('reveal');
+  if (rar !== 'n') gRestart(document.getElementById('gFlash'), 'go');
+  sfxReveal(rar);
+  if (rar === 'ssr') launchConfetti(60);
+  gAt(rar === 'ssr' ? 2800 : 2000, gachaClose);
+}
+
+function gachaClose() {
+  if (!gState) return;
+  gClearTimers();
+  document.getElementById('gacha').classList.remove('open');
+  const done = gState.done; gState = null;
+  done();
+}
+
+function gachaTap() {
+  if (!gState) return;
+  if (gState.stage === 'charge') gachaReveal();
+  else if (Date.now() - gState.t > 350) gachaClose();
+}
+
+function updateToggles() {
+  const g = document.getElementById('gachaToggle'), sd = document.getElementById('soundToggle');
+  g.textContent = `🎰 ガチャ演出：${gachaOn ? 'ON' : 'OFF'}`; g.classList.toggle('on', gachaOn);
+  sd.textContent = `${soundOn ? '🔊' : '🔇'} 音：${soundOn ? 'ON' : 'OFF'}`; sd.classList.toggle('on', soundOn);
+}
+function toggleGacha() { gachaOn = !gachaOn; try { localStorage.setItem('gachaOn', gachaOn ? '1' : '0'); } catch (e) {} updateToggles(); }
+function toggleSound() { soundOn = !soundOn; try { localStorage.setItem('soundOn', soundOn ? '1' : '0'); } catch (e) {} updateToggles(); }
+
+// ---- 効果音（Web Audio で合成。音声ファイル不要） ----
+let actx = null, chargeNode = null;
+function getAudio() {
+  if (!soundOn) return null;
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === 'suspended') actx.resume();
+    return actx;
+  } catch (e) { return null; }
+}
+function tone(freq, t0, dur, type = 'triangle', vol = 0.12) {
+  const a = getAudio(); if (!a) return;
+  const o = a.createOscillator(), g = a.createGain(), st = a.currentTime + t0;
+  o.type = type; o.frequency.value = freq;
+  g.gain.setValueAtTime(0.0001, st);
+  g.gain.linearRampToValueAtTime(vol, st + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, st + dur);
+  o.connect(g); g.connect(a.destination);
+  o.start(st); o.stop(st + dur + 0.05);
+}
+function sfxCharge() {
+  const a = getAudio(); if (!a) return;
+  const o = a.createOscillator(), g = a.createGain();
+  o.type = 'sawtooth';
+  o.frequency.setValueAtTime(90, a.currentTime);
+  o.frequency.exponentialRampToValueAtTime(700, a.currentTime + 2);
+  g.gain.setValueAtTime(0.0001, a.currentTime);
+  g.gain.linearRampToValueAtTime(0.05, a.currentTime + 1.9);
+  o.connect(g); g.connect(a.destination); o.start();
+  chargeNode = o;
+}
+function sfxStopCharge() {
+  if (chargeNode) { try { chargeNode.stop(); } catch (e) {} chargeNode = null; }
+}
+function sfxReveal(rar) {
+  const seq = {
+    ssr: [523, 659, 784, 1047, 1319, 1568, 2093],
+    sr:  [523, 659, 784, 1047],
+    r:   [523, 784],
+    n:   [330, 262, 196],
+  }[rar];
+  seq.forEach((f, i) => tone(f, i * (rar === 'n' ? 0.18 : 0.08), rar === 'n' ? 0.5 : 0.6));
 }
 
 function updateCounters() {
@@ -999,8 +1279,8 @@ function emitSeatParticles(el) {
   const cx = rect.left + rect.width/2, cy = rect.top + rect.height/2;
   for (let i=0; i<12; i++) particles.push(new Particle(cx, cy));
 }
-function launchConfetti() {
-  for (let i=0; i<120; i++) {
+function launchConfetti(count = 120) {
+  for (let i=0; i<count; i++) {
     setTimeout(() => {
       particles.push(new Particle(Math.random()*canvas.width, canvas.height*0.3+Math.random()*canvas.height*0.3, true));
     }, i*20);
@@ -1015,7 +1295,7 @@ function animLoop() {
 
 // ===================== BOOT =====================
 loadFromHash(); // URLハッシュがあれば設定を復元（GitHub Pages上で動作）
-initState(); renderClassroom(); updateCounters(); animLoop();
+initState(); renderClassroom(); updateCounters(); updateToggles(); animLoop();
 </script>
 
 <!-- SHARE MODAL -->
