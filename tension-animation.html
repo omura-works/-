@@ -40,9 +40,10 @@ canvas{width:100%;height:100%;display:block}
 <div class="wrap">
   <header>
     <h1>糸が物体を引く力（張力）T₁・T₂ を求めよう</h1>
-    <p>第11回プリント［1］〜［5］の解き方アニメーション（約90秒）。スペースキーで再生／一時停止、←→で前後のシーンへ。</p>
+    <p>第11回プリント［1］〜［5］の解き方アニメーション（約98秒・ナレーションとBGM付き）。スペースキーで再生／一時停止、←→で前後のシーンへ。</p>
   </header>
   <div class="stage" id="stage">
+    <audio id="au" src="tension-animation-audio.m4a" preload="auto"></audio>
     <canvas id="cv" width="1920" height="1080" aria-label="張力の解説アニメーション"></canvas>
     <button class="bigplay" id="bigplay" aria-label="再生">▶</button>
   </div>
@@ -50,14 +51,15 @@ canvas{width:100%;height:100%;display:block}
     <button id="play" aria-label="再生・一時停止">▶ 再生</button>
     <button id="prev" aria-label="前のシーン">⏮</button>
     <button id="next" aria-label="次のシーン">⏭</button>
+    <button id="mute" aria-label="音声のオン・オフ">🔊 音あり</button>
     <input id="seek" type="range" min="0" max="1000" value="0" aria-label="再生位置">
-    <span class="time" id="time">0:00 / 1:30</span>
+    <span class="time" id="time">0:00 / 1:38</span>
     <select id="speed" aria-label="再生速度">
       <option value="0.75">0.75倍</option><option value="1" selected>1倍</option><option value="1.25">1.25倍</option><option value="1.5">1.5倍</option>
     </select>
   </div>
   <div class="scenes" id="scenes"></div>
-  <p class="note">重力は「質量 × 9.8」（g = 9.8 m/s²）で計算しています。色のルール：<b style="color:#2f86f0">青＝T₁</b>・<b style="color:#e09a1c">橙＝T₂</b>・<b style="color:#e8445f">赤＝重力</b>・<b style="color:#9a72f0">紫＝角度</b>。</p>
+  <p class="note">重力は「質量 × 9.8」（g = 9.8 m/s²）で計算しています。ナレーション：VOICEVOX:四国めたん ／ BGM：ベートーヴェン「月光ソナタ」第1楽章の冒頭をもとに独自に合成した演奏。色のルール：<b style="color:#2f86f0">青＝T₁</b>・<b style="color:#e09a1c">橙＝T₂</b>・<b style="color:#e8445f">赤＝重力</b>・<b style="color:#9a72f0">紫＝角度</b>。</p>
 </div>
 
 <script>
@@ -371,36 +373,42 @@ S.push({stage:5,dur:10,name:'答えとまとめ',title:'答えと {y:要点}',
   text('要点',1480,250,{size:36,col:C.mute,align:'center',alpha:pr(t,3)});
   pts.forEach((p,i)=>{const a=pr(t,3.4+i*1.2,.6),y=360+i*170;
     card(1130,y-62,700,124,a,'rgba(255,224,102,.07)');rich(p,1160,y,{size:36,alpha:a});});
+  text('ナレーション VOICEVOX:四国めたん ／ BGM ベートーヴェン「月光」第1楽章より',1480,880,{size:22,col:C.mute,align:'center',alpha:pr(t,7)});
  }});
 
-/* ---------- タイムライン ---------- */
+/* ---------- タイムライン（シーンの長さはナレーションに合わせる） ---------- */
+const DUR=[6.6,9.4,7,6.6,8.1,7.5,7.4,7,10.2,10.1,7.5,10.2];
+S.forEach((s,i)=>{s.ad=s.dur;s.dur=DUR[i];});
 let starts=[],TOTAL=0;S.forEach(s=>{starts.push(TOTAL);TOTAL+=s.dur;});
-let T=0,playing=false,last=0,speed=1;
+let T=0,playing=false,last=0,speed=1;let fresh=true;
+const au=document.getElementById('au');let audioOK=true;au.addEventListener('error',()=>{audioOK=false;});
+function jump(x){fresh=false;T=Math.max(0,Math.min(TOTAL-.001,x));if(audioOK){try{au.currentTime=T;}catch(e){}}draw();}
 function sceneAt(tt){let i=S.length-1;for(let k=0;k<S.length;k++){if(tt<starts[k]+S[k].dur){i=k;break;}}return i;}
 function render(tt){
   const i=sceneAt(tt),sc=S[i],t=tt-starts[i];
   ctx.setTransform(1,0,0,1,0,0);ctx.globalAlpha=1;ctx.drawImage(bgc,0,0);
-  ctx.save();ctx.globalAlpha=clamp(t/.35);sc.draw(t);chrome(sc,t);ctx.restore();
+  ctx.save();ctx.globalAlpha=clamp(t/.35);sc.draw(sc.dur>sc.ad?t*sc.ad/sc.dur:t);chrome(sc,t);ctx.restore();
   return i;
 }
 const $=id=>document.getElementById(id);
 const fmt=s=>`${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
 const sc=$('scenes');
-S.forEach((s,i)=>{const b=document.createElement('button');b.innerHTML=`<b>${String(i+1).padStart(2,'0')} · ${STAGES[s.stage-1]}</b>${s.name}`;b.onclick=()=>{T=starts[i];draw();};sc.appendChild(b);});
+S.forEach((s,i)=>{const b=document.createElement('button');b.innerHTML=`<b>${String(i+1).padStart(2,'0')} · ${STAGES[s.stage-1]}</b>${s.name}`;b.onclick=()=>jump(starts[i]);sc.appendChild(b);});
 let curScene=-1;
 function draw(){
   const i=render(T);$('seek').value=Math.round(T/TOTAL*1000);$('time').textContent=`${fmt(T)} / ${fmt(TOTAL)}`;
   if(i!==curScene){curScene=i;[...sc.children].forEach((b,k)=>b.classList.toggle('on',k===i));}
 }
-function loop(now){if(!playing)return;const dt=Math.min(.1,(now-last)/1000);last=now;T+=dt*speed;
+function loop(now){if(!playing)return;const dt=Math.min(.1,(now-last)/1000);last=now;if(audioOK&&!au.paused&&au.readyState>=2&&au.currentTime<TOTAL)T=au.currentTime;else T+=dt*speed;
   if(T>=TOTAL){T=TOTAL-0.001;setPlay(false);}draw();requestAnimationFrame(loop);}
 function setPlay(p){playing=p;$('play').textContent=p?'❚❚ 一時停止':'▶ 再生';$('bigplay').hidden=p;
-  if(p){if(T>=TOTAL-.01)T=0;last=performance.now();requestAnimationFrame(loop);}}
+  if(p){if(T>=TOTAL-.01||fresh)T=0;fresh=false;if(audioOK){try{au.currentTime=T;au.playbackRate=speed;}catch(e){}au.play().catch(()=>{audioOK=false;});}last=performance.now();requestAnimationFrame(loop);}else{au.pause();}}
 $('play').onclick=()=>setPlay(!playing);$('bigplay').onclick=()=>setPlay(true);
-$('prev').onclick=()=>{const i=sceneAt(T);T=starts[Math.max(0,(T-starts[i]<1)?i-1:i)];draw();};
-$('next').onclick=()=>{const i=sceneAt(T);T=starts[Math.min(S.length-1,i+1)];draw();};
-$('seek').oninput=e=>{T=e.target.value/1000*TOTAL;if(T>=TOTAL)T=TOTAL-.001;draw();};
-$('speed').onchange=e=>{speed=+e.target.value;};
+$('prev').onclick=()=>{const i=sceneAt(T);jump(starts[Math.max(0,(T-starts[i]<1)?i-1:i)]);};
+$('next').onclick=()=>{const i=sceneAt(T);jump(starts[Math.min(S.length-1,i+1)]);};
+$('mute').onclick=()=>{au.muted=!au.muted;$('mute').textContent=au.muted?'🔇 音なし':'🔊 音あり';};
+$('seek').oninput=e=>jump(e.target.value/1000*TOTAL);
+$('speed').onchange=e=>{speed=+e.target.value;try{au.playbackRate=speed;}catch(e){}};
 document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;
   if(e.code==='Space'){e.preventDefault();setPlay(!playing);}else if(e.code==='ArrowRight')$('next').click();else if(e.code==='ArrowLeft')$('prev').click();});
 window.__renderAt=tt=>{render(tt);};window.__TOTAL=TOTAL;
